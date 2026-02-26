@@ -3,7 +3,8 @@ from jose import jwt
 from passlib.context import CryptContext
 from typing import Optional
 
-SECRET_KEY = "supersecretkey"  # change later via env
+import os
+SECRET_KEY = os.getenv("SECRET_KEY")  # change later via env
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
