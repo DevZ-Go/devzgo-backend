@@ -7,7 +7,7 @@ from app.db.session import engine
 app = FastAPI()
 
 # Create the database tables based on the models defined in the Base metadata
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 
 @app.get("/")
 def root():
