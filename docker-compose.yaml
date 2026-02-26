@@ -10,7 +10,7 @@ services:
       POSTGRES_DB: devzgo_db
     ports:
       - "5432:5432"
-    vlumes:
+    volumes:
       - postgres_data:/var/lib/postgresql/data
 
   backend:
@@ -20,7 +20,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL: postgresql://devzgo:devzgo@db:5432/devzgo_db
+      DATABASE_URL: "postgresql://devzgo:devzgo@db:5432/devzgo_db"
 
-    volumes:
-      posgres_data:
+volumes:
+  postgres_data:
