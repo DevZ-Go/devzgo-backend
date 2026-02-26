@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_USER: devzgo
+      POSTGRES_PASSWORD: devzgo
+      POSTGRES_DB: devzgo_db
+    ports:
+      - "5432:5432"
+    vlumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: .
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL: postgresql://devzgo:devzgo@db:5432/devzgo_db
+
+    volumes:
+      posgres_data:
