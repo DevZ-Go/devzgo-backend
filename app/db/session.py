@@ -1,5 +1,4 @@
 import os
-from unittest.mock import Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 

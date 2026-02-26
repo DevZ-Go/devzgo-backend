@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import relationship
 from app.db.session import Base
+from app.models.associations import project_tech
 
 class TechStack(Base):
     __tablename__ = 'techstacks'
@@ -10,6 +11,6 @@ class TechStack(Base):
 
     projects = relationship(
         "Project",
-        secondary="project_tech",
+        secondary=project_tech,
         back_populates="tech_stacks"
         )

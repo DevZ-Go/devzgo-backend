@@ -15,4 +15,4 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # This relationship allows us to access the projects owned by a user
-    peojects = relationship("Project", back_populates="owner")
+    projects = relationship("Project", back_populates="owner")
