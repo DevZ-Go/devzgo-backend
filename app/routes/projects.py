@@ -14,13 +14,13 @@ from app.models.user import User
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
 
+# ---------------- CREATE PROJECT ----------------
 @router.post("", response_model=ProjectResponse)
 def create_project(
     project_data: ProjectCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Validate tech stack IDs
     tech_stacks = db.query(TechStack).filter(
         TechStack.id.in_(project_data.tech_stack_ids)
     ).all()
@@ -28,7 +28,6 @@ def create_project(
     if len(tech_stacks) != len(project_data.tech_stack_ids):
         raise HTTPException(status_code=400, detail="Invalid tech stack ID provided")
 
-    # Create project
     new_project = Project(
         owner_id=current_user.id,
         title=project_data.title,
@@ -44,44 +43,117 @@ def create_project(
     db.commit()
     db.refresh(new_project)
 
-    return ProjectResponse(
-        id=new_project.id,
-        title=new_project.title,
-        short_description=new_project.short_description,
-        full_description=new_project.full_description,
-        category=new_project.category,
-        visibility=new_project.visibility,
-        cover_image_url=new_project.cover_image_url,
-        created_at=new_project.created_at,
-        updated_at=new_project.updated_at,
-        owner_username=current_user.username,
-        tech_stacks=[tech.name for tech in new_project.tech_stacks],
+    return build_project_response(new_project, current_user.username)
+
+
+# ---------------- LIST PUBLIC PROJECTS ----------------
+@router.get("", response_model=List[ProjectResponse])
+def list_public_projects(
+    tech_stack_id: int | None = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(Project).filter(
+        Project.visibility == ProjectVisibility.PUBLIC
     )
 
-
-@router.get("", response_model=List[ProjectResponse])
-def list_public_projects(db: Session = Depends(get_db)):
-    projects = db.query(Project).filter(
-        Project.visibility == ProjectVisibility.PUBLIC
-    ).all()
-
-    result = []
-
-    for project in projects:
-        result.append(
-            ProjectResponse(
-                id=project.id,
-                title=project.title,
-                short_description=project.short_description,
-                full_description=project.full_description,
-                category=project.category,
-                visibility=project.visibility,
-                cover_image_url=project.cover_image_url,
-                created_at=project.created_at,
-                updated_at=project.updated_at,
-                owner_username=project.owner.username,
-                tech_stacks=[tech.name for tech in project.tech_stacks],
-            )
+    if tech_stack_id:
+        query = query.join(Project.tech_stacks).filter(
+            TechStack.id == tech_stack_id
         )
 
-    return result
+    projects = query.all()
+
+    return [
+        build_project_response(p, p.owner.username)
+        for p in projects
+    ]
+
+
+# ---------------- LIST MY PROJECTS ----------------
+# 🔥 IMPORTANT: must come BEFORE /{project_id}
+@router.get("/me", response_model=List[ProjectResponse])
+def list_my_projects(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    projects = db.query(Project).filter(
+        Project.owner_id == current_user.id
+    ).all()
+
+    return [
+        build_project_response(p, current_user.username)
+        for p in projects
+    ]
+
+
+# ---------------- LIST TECH STACKS ----------------
+# 🔥 IMPORTANT: must come BEFORE /{project_id}
+@router.get("/techstacks")
+def list_techstacks(db: Session = Depends(get_db)):
+    tech_stacks = db.query(TechStack).all()
+    return [{"id": tech.id, "name": tech.name} for tech in tech_stacks]
+
+
+# ---------------- GET SINGLE PROJECT ----------------
+@router.get("/{project_id}", response_model=ProjectResponse)
+def get_project(project_id: UUID, db: Session = Depends(get_db)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.visibility == ProjectVisibility.PRIVATE:
+        raise HTTPException(status_code=403, detail="Private project")
+
+    return build_project_response(project, project.owner.username)
+
+
+# ---------------- UPDATE PROJECT ----------------
+@router.put("/{project_id}", response_model=ProjectResponse)
+def update_project(
+    project_id: UUID,
+    project_update: ProjectCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    project.title = project_update.title
+    project.short_description = project_update.short_description
+    project.full_description = project_update.full_description
+    project.category = project_update.category
+    project.visibility = project_update.visibility
+
+    tech_stacks = db.query(TechStack).filter(
+        TechStack.id.in_(project_update.tech_stack_ids)
+    ).all()
+
+    project.tech_stacks = tech_stacks
+
+    db.commit()
+    db.refresh(project)
+
+    return build_project_response(project, current_user.username)
+
+
+# ---------------- HELPER FUNCTION ----------------
+def build_project_response(project: Project, owner_username: str):
+    return ProjectResponse(
+        id=project.id,
+        title=project.title,
+        short_description=project.short_description,
+        full_description=project.full_description,
+        category=project.category,
+        visibility=project.visibility,
+        cover_image_url=project.cover_image_url,
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+        owner_username=owner_username,
+        tech_stacks=[tech.name for tech in project.tech_stacks],
+    )
