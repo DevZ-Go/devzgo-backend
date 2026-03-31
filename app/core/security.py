@@ -1,10 +1,28 @@
 from datetime import datetime, timedelta
+from pathlib import Path
+import logging
 from jose import jwt
 from passlib.context import CryptContext
 from typing import Optional
 
 import os
-SECRET_KEY = os.getenv("SECRET_KEY")  # change later via env
+
+try:
+    # Load devzgo-backend/.env (if it exists) so SECRET_KEY can be configured.
+    # security.py lives in devzgo-backend/app/core/, so parents[2] is devzgo-backend/
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+except Exception:
+    # If dotenv isn't available or .env is missing, we still want the app to run in dev.
+    pass
+
+SECRET_KEY = (os.getenv("SECRET_KEY") or "").strip()  # change via env for real deployments
+if not SECRET_KEY:
+    SECRET_KEY = "dev-insecure-secret-change-me"
+    logging.warning(
+        "SECRET_KEY is not set. Using a dev fallback secret. Set SECRET_KEY in devzgo-backend/.env for production."
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

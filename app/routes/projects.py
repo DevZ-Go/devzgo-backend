@@ -1,7 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
+from uuid import uuid4
+from pathlib import Path
+import shutil
 
 from app.db.session import get_db
 from app.models.project import Project
@@ -12,6 +15,115 @@ from app.core.dependencies import get_current_user
 from app.models.user import User
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+
+# ---------------- FILE UPLOADS ----------------
+UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads" / "projects"
+
+
+def _require_project_owner(db: Session, project_id: UUID, current_user: User) -> Project:
+    project = (
+        db.query(Project)
+        .filter(Project.id == project_id, Project.owner_id == current_user.id)
+        .first()
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _save_file(project_id: UUID, file: UploadFile) -> tuple[str, str]:
+    # Save to: uploads/projects/<project_id>/<uuid>.<ext>
+    project_dir = UPLOAD_DIR / str(project_id)
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    original_name = file.filename or "upload"
+    ext = Path(original_name).suffix
+    safe_filename = f"{uuid4().hex}{ext}"
+    dest_path = project_dir / safe_filename
+
+    with dest_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # This matches `StaticFiles` mount path in app/main.py
+    url_path = f"/uploads/projects/{project_id}/{safe_filename}"
+    return safe_filename, url_path
+
+
+@router.post("/{project_id}/upload-image")
+def upload_project_image(
+    project_id: UUID,
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not (image.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="File is not an image")
+
+    project = _require_project_owner(db, project_id, current_user)
+    _filename, url_path = _save_file(project_id, image)
+
+    project.cover_image_url = url_path
+    db.commit()
+    db.refresh(project)
+
+    return {"url": url_path}
+
+
+@router.post("/{project_id}/upload-video")
+def upload_project_video(
+    project_id: UUID,
+    video: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not (video.content_type or "").startswith("video/"):
+        raise HTTPException(status_code=400, detail="File is not a video")
+
+    # For now, we store the video on disk and return the URL.
+    # (If you want to persist video_url in the DB, tell me and we'll add a migration.)
+    _filename, url_path = _save_file(project_id, video)
+    _ = _require_project_owner(db, project_id, current_user)  # enforce ownership
+
+    return {"url": url_path}
+
+
+@router.post("/{project_id}/upload-files")
+def upload_project_files(
+    project_id: UUID,
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Enforce ownership; actual file types are left flexible.
+    _ = _require_project_owner(db, project_id, current_user)
+
+    saved: list[dict] = []
+    for f in files:
+        _filename, url_path = _save_file(project_id, f)
+        saved.append({"filename": f.filename, "url": url_path})
+
+    return {"files": saved}
+
+
+@router.get("/{project_id}/uploads")
+def list_project_uploads(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _ = _require_project_owner(db, project_id, current_user)
+    project_dir = UPLOAD_DIR / str(project_id)
+    if not project_dir.exists():
+        return {"files": []}
+
+    items = []
+    for p in project_dir.iterdir():
+        if p.is_file():
+            items.append(
+                {"filename": p.name, "url": f"/uploads/projects/{project_id}/{p.name}"}
+            )
+    return {"files": items}
 
 
 # ---------------- CREATE PROJECT ----------------

@@ -4,7 +4,11 @@ and ensures database tables are created on startup.
 The root endpoint provides a simple health check to confirm the backend is running.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 # Importing CORSMiddleware to handle Cross-Origin Resource Sharing, allowing the frontend to communicate with the backend
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +21,18 @@ from app.routes.auth import router as auth_router
 from app.routes.projects import router as projects_router
 
 app = FastAPI()
+
+
+@app.exception_handler(OperationalError)
+async def database_unreachable_handler(_request: Request, _exc: OperationalError):
+    """Return 503 when PostgreSQL (or DATABASE_URL) is down instead of a 500 stack trace."""
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Cannot connect to the database. Start PostgreSQL on port 5432, then run alembic upgrade head. Or set DATABASE_URL in devzgo-backend/.env to your Postgres instance.",
+        },
+    )
+
 
 # Configure CORS to allow requests from the frontend (adjust origins as needed)
 origins = [
@@ -40,6 +56,12 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(projects_router)
+
+# ---------------- Static uploads ----------------
+# Files will be stored on disk and served at `/uploads/...`
+UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.get("/")
 def root():

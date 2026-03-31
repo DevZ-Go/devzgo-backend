@@ -4,10 +4,7 @@ from jose import jwt, JWTError
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.user import User
-import os
-
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = "HS256"
+from app.core.security import SECRET_KEY, ALGORITHM
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
@@ -26,7 +23,7 @@ def get_current_user(
                 detail="Invalid token",
             )
 
-    except JWTError:
+    except (JWTError, Exception):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
