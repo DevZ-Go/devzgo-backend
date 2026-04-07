@@ -28,6 +28,8 @@ class Project(Base):
     files = relationship("File", backref="project", cascade="all, delete-orphan")
 
     category = Column(Enum(ProjectCategory), nullable=False)
+    # When category is Other: short custom label (1–2 words), optional
+    category_other = Column(String(64), nullable=True)
     visibility = Column(Enum(ProjectVisibility), nullable=False)
 
     cover_image_url = Column(String, nullable=True)

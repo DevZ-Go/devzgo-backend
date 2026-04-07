@@ -5,6 +5,9 @@ from app.models.techstack import TechStack
 tech_names = [
     "Python",
     "JavaScript",
+    "HTML",
+    "CSS",
+    "JSON",
     "Java",
     "C#",
     "Go",

@@ -39,10 +39,12 @@ from app.models.techstack import TechStack
 from app.models.user import User
 
 STORAGE_ROOT = Path("storage")
+# One pass per file: extensions map to catalog names (see seed_techstacks). Unknown
+# extensions contribute nothing; unknown catalog names are skipped in sync.
 EXTENSION_TO_TECHS: dict[str, list[str]] = {
     ".py": ["Python"],
     ".js": ["JavaScript"],
-    ".jsx": ["JavaScript", "React"],
+    ".jsx": ["React"],
     ".ts": ["TypeScript"],
     ".tsx": ["TypeScript", "React"],
     ".java": ["Java"],
@@ -168,8 +170,10 @@ def sync_project_tech_stacks(
     db: Session, project: Project, detected_names: list[str]
 ) -> list[str]:
     """
-    Link project.tech_stacks to detected names.
-    Creates missing TechStack rows so detection works even if seed list is incomplete.
+    Link project.tech_stacks to names that match existing TechStack rows.
+
+    Detection is driven only by file extensions present in the workspace. Names that
+    are not in the catalog are skipped silently (no new rows, no extra messaging).
     """
     if not detected_names:
         project.tech_stacks = []
@@ -178,14 +182,16 @@ def sync_project_tech_stacks(
     existing = db.query(TechStack).all()
     by_lower = {t.name.lower(): t for t in existing}
     linked: list[TechStack] = []
+    seen_ids: set[int] = set()
     for name in detected_names:
         key = name.lower()
         tech = by_lower.get(key)
         if tech is None:
-            tech = TechStack(name=name)
-            db.add(tech)
-            db.flush()
-            by_lower[key] = tech
+            continue
+        tid = int(tech.id)
+        if tid in seen_ids:
+            continue
+        seen_ids.add(tid)
         linked.append(tech)
 
     project.tech_stacks = linked

@@ -9,7 +9,7 @@ from app.db.session import get_db
 from app.models.file import File as FileRecord
 from app.models.project import Project
 from app.models.techstack import TechStack
-from app.models.enums import ProjectVisibility
+from app.models.enums import ProjectCategory, ProjectVisibility
 from app.schemas.project import ProjectCreate, ProjectFileEntry, ProjectResponse
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.user import User
@@ -34,12 +34,18 @@ def create_project(
     if len(tech_stacks) != len(project_data.tech_stack_ids):
         raise HTTPException(status_code=400, detail="Invalid tech stack ID provided")
 
+    cat_other = (
+        project_data.category_other
+        if project_data.category == ProjectCategory.OTHER
+        else None
+    )
     new_project = Project(
         owner_id=current_user.id,
         title=project_data.title,
         short_description=project_data.short_description,
         full_description=project_data.full_description,
         category=project_data.category,
+        category_other=cat_other,
         visibility=project_data.visibility,
         cover_image_url=project_data.cover_image_url,
     )
@@ -282,15 +288,25 @@ def update_project(
     project.short_description = project_update.short_description
     project.full_description = project_update.full_description
     project.category = project_update.category
+    project.category_other = (
+        project_update.category_other
+        if project_update.category == ProjectCategory.OTHER
+        else None
+    )
     project.visibility = project_update.visibility
     project.cover_image_url = project_update.cover_image_url
     project.demo_video_url = project_update.demo_video_url
 
+    # Replace tech stacks on every update (including [] to clear).
     if project_update.tech_stack_ids:
         tech_stacks = db.query(TechStack).filter(
             TechStack.id.in_(project_update.tech_stack_ids)
         ).all()
+        if len(tech_stacks) != len(project_update.tech_stack_ids):
+            raise HTTPException(status_code=400, detail="Invalid tech stack ID provided")
         project.tech_stacks = tech_stacks
+    else:
+        project.tech_stacks = []
 
     db.commit()
     db.refresh(project)
@@ -361,6 +377,7 @@ def build_project_response(
         short_description=project.short_description,
         full_description=project.full_description,
         category=project.category,
+        category_other=project.category_other,
         visibility=project.visibility,
         cover_image_url=project.cover_image_url,
         demo_video_url=project.demo_video_url,
