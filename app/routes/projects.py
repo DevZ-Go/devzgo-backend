@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -15,6 +17,7 @@ from app.routes.workspace_upload import perform_workspace_zip_upload
 from app.services.project_storage import delete_all_project_storage
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+STORAGE_ROOT = Path("storage")
 
 
 # ---------------- CREATE PROJECT ----------------
@@ -149,6 +152,83 @@ def list_project_files(
         .all()
     )
     return rows
+
+
+# ---------------- READ ONE PROJECT FILE ----------------
+@router.get("/{project_id}/file")
+def read_project_file(
+    project_id: UUID,
+    path: str = Query(..., min_length=1, description="Relative path inside project workspace"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    Read a single file from storage/project_<project_id>/ using a safe relative path.
+
+    Public project: readable by anyone.
+    Private project: only owner may read.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.visibility == ProjectVisibility.PRIVATE:
+        if current_user is None or project.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Private project")
+
+    # Keep behavior stable across clients: handle leading "./", "\" separators, and accidental spaces.
+    raw_relative = path.strip().replace("\\", "/").lstrip("/")
+    relative_parts = [p for p in raw_relative.split("/") if p not in ("", ".")]
+    if not relative_parts or ".." in relative_parts:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    relative = "/".join(relative_parts)
+
+    # Prefer DB path if provided path differs only by client normalization.
+    file_row = (
+        db.query(FileRecord)
+        .filter(
+            FileRecord.project_id == project_id,
+            FileRecord.file_path == relative,
+            FileRecord.is_directory.is_(False),
+        )
+        .first()
+    )
+    if file_row is None:
+        file_row = (
+            db.query(FileRecord)
+            .filter(
+                FileRecord.project_id == project_id,
+                FileRecord.file_path == raw_relative,
+                FileRecord.is_directory.is_(False),
+            )
+            .first()
+        )
+    if file_row is not None:
+        relative = file_row.file_path
+
+    workspace_root = STORAGE_ROOT / f"project_{project_id}"
+    full_path = workspace_root / relative
+    try:
+        resolved_root = workspace_root.resolve()
+        resolved_file = full_path.resolve()
+        resolved_file.relative_to(resolved_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+
+    # If the DB row exists but storage path changed shape, try a second normalized fallback.
+    if (not resolved_file.exists() or not resolved_file.is_file()) and file_row is not None:
+        fallback_relative = file_row.file_path.strip().replace("\\", "/").lstrip("./")
+        resolved_file = (workspace_root / fallback_relative).resolve()
+
+    if not resolved_file.exists() or not resolved_file.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        content = resolved_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        raise HTTPException(status_code=500, detail="Failed to read file")
+
+    return {"content": content}
 
 
 # ---------------- GET SINGLE PROJECT ----------------
