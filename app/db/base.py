@@ -5,3 +5,5 @@ from app.models.user import User
 from app.models.project import Project
 from app.models.techstack import TechStack
 from app.models.associations import project_tech
+
+from app.models.file import File

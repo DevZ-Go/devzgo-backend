@@ -25,10 +25,13 @@ class Project(Base):
     short_description = Column(String, nullable=True)
     full_description = Column(Text, nullable=True)
 
+    files = relationship("File", backref="project", cascade="all, delete-orphan")
+
     category = Column(Enum(ProjectCategory), nullable=False)
     visibility = Column(Enum(ProjectVisibility), nullable=False)
 
     cover_image_url = Column(String, nullable=True)
+    demo_video_url = Column(String, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
