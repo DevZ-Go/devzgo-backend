@@ -35,9 +35,21 @@ from sqlalchemy.orm import Session
 
 from app.models.file import File as FileRecord
 from app.models.project import Project
+from app.models.techstack import TechStack
 from app.models.user import User
 
 STORAGE_ROOT = Path("storage")
+EXTENSION_TO_TECHS: dict[str, list[str]] = {
+    ".py": ["Python"],
+    ".js": ["JavaScript"],
+    ".jsx": ["JavaScript", "React"],
+    ".ts": ["TypeScript"],
+    ".tsx": ["TypeScript", "React"],
+    ".java": ["Java"],
+    ".html": ["HTML"],
+    ".css": ["CSS"],
+    ".json": ["JSON"],
+}
 
 
 def workspace_dir_for_project(project_id: UUID) -> Path:
@@ -139,6 +151,47 @@ def build_file_records_from_workspace(
     return rows, file_count
 
 
+def detect_tech_stack_names(file_rows: list[FileRecord]) -> list[str]:
+    """Detect tech names from file extensions (simple deterministic mapping)."""
+    detected: set[str] = set()
+    for row in file_rows:
+        if row.is_directory:
+            continue
+        ext = Path(row.file_name).suffix.lower()
+        techs = EXTENSION_TO_TECHS.get(ext, [])
+        for tech in techs:
+            detected.add(tech)
+    return sorted(detected)
+
+
+def sync_project_tech_stacks(
+    db: Session, project: Project, detected_names: list[str]
+) -> list[str]:
+    """
+    Link project.tech_stacks to detected names.
+    Creates missing TechStack rows so detection works even if seed list is incomplete.
+    """
+    if not detected_names:
+        project.tech_stacks = []
+        return []
+
+    existing = db.query(TechStack).all()
+    by_lower = {t.name.lower(): t for t in existing}
+    linked: list[TechStack] = []
+    for name in detected_names:
+        key = name.lower()
+        tech = by_lower.get(key)
+        if tech is None:
+            tech = TechStack(name=name)
+            db.add(tech)
+            db.flush()
+            by_lower[key] = tech
+        linked.append(tech)
+
+    project.tech_stacks = linked
+    return [t.name for t in linked]
+
+
 def perform_workspace_zip_upload(
     project_id: UUID,
     file: UploadFile,
@@ -185,12 +238,15 @@ def perform_workspace_zip_upload(
         new_rows, total_files = build_file_records_from_workspace(project_id, workspace_root)
         for row in new_rows:
             db.add(row)
+        detected_names = detect_tech_stack_names(new_rows)
+        detected_linked = sync_project_tech_stacks(db, project, detected_names)
 
         db.commit()
 
         return {
             "message": "Workspace uploaded successfully",
             "total_files": total_files,
+            "detected_tech_stacks": detected_linked,
         }
     except Exception:
         db.rollback()

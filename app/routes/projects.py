@@ -286,11 +286,11 @@ def update_project(
     project.cover_image_url = project_update.cover_image_url
     project.demo_video_url = project_update.demo_video_url
 
-    tech_stacks = db.query(TechStack).filter(
-        TechStack.id.in_(project_update.tech_stack_ids)
-    ).all()
-
-    project.tech_stacks = tech_stacks
+    if project_update.tech_stack_ids:
+        tech_stacks = db.query(TechStack).filter(
+            TechStack.id.in_(project_update.tech_stack_ids)
+        ).all()
+        project.tech_stacks = tech_stacks
 
     db.commit()
     db.refresh(project)
