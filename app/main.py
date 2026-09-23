@@ -16,8 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.db.base import Base
 from app.db.session import engine
 from app.routes.auth import router as auth_router
-
 from app.routes.projects import router as projects_router
+from app.routes.network import router as network_router
+from app.routes.connections import router as connections_router
+from app.routes.messages import router as messages_router
+from app.routes.collaborations import router as collaborations_router
+from app.routes.notifications import router as notifications_router
+from app.routes.profiles import router as profiles_router
+from app.routes.analytics import router as analytics_router
 
 from fastapi.staticfiles import StaticFiles
 
@@ -42,6 +48,7 @@ origins = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000"
 ]
 
 app.add_middleware(
@@ -58,11 +65,18 @@ app.add_middleware(
 app.mount("/storage", StaticFiles(directory="storage"), name="storage")
 app.include_router(media_router)
 
-# Create the database tables based on the models defined in the Base metadata
-# Base.metadata.create_all(bind=engine)
+# Create the database tables based on the models defined in the Base metadata.
+Base.metadata.create_all(bind=engine)
 
 app.include_router(auth_router)
 app.include_router(projects_router)
+app.include_router(network_router)
+app.include_router(connections_router)
+app.include_router(messages_router)
+app.include_router(collaborations_router)
+app.include_router(notifications_router)
+app.include_router(profiles_router)
+app.include_router(analytics_router)
 
 static_dir = Path(__file__).resolve().parent / "static"
 static_dir.mkdir(parents=True, exist_ok=True)
