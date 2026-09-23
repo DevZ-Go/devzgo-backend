@@ -1,5 +1,5 @@
 version: '3.9'
-
+# To resolve tgge problem of Multi-Container Application we use ths to run all needed
 services:
   db:
     image: postgres:15
