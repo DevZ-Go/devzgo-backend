@@ -1,16 +1,23 @@
 import uuid
 from datetime import datetime, timedelta
-from app.db.session import SessionLocal
-from app.models.user import User
-from app.models.profile import UserProfile
-from app.models.project import Project
+from app.db.session import SessionLocal, engine
+from app.db.base import (
+    Base,
+    User,
+    UserProfile,
+    Project,
+    TechStack,
+    File,
+    NetworkActivity,
+    ActivityLike,
+    ActivityComment,
+    Connection,
+    Message,
+    CollaborationRequest,
+    ProjectCollaborator,
+    Notification,
+)
 from app.models.enums import ProjectCategory, ProjectVisibility
-from app.models.techstack import TechStack
-from app.models.network import NetworkActivity, ActivityLike, ActivityComment
-from app.models.connection import Connection
-from app.models.message import Message
-from app.models.collaboration import CollaborationRequest, ProjectCollaborator
-from app.models.notification import Notification
 from app.core.security import hash_password
 
 DEMO_USERS = [
@@ -61,6 +68,7 @@ DEMO_USERS = [
 ]
 
 def seed_demo_data():
+    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         user_map = {}
@@ -105,7 +113,7 @@ def seed_demo_data():
                 "title": "DevZ-Go Core Platform",
                 "short_description": "Unified developer portfolio and collaborative proof-of-work ecosystem.",
                 "full_description": "DevZ-Go connects developer profiles, automated AST code analysis, real-time peer messaging, and team recruitment into a cohesive platform.",
-                "category": ProjectCategory.FULL_STACK,
+                "category": ProjectCategory.WEB_DEVELOPMENT,
                 "visibility": ProjectVisibility.PUBLIC,
                 "cover_image_url": "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=1200&h=630&fit=crop",
                 "github_url": "https://github.com/DevZ-Go",
@@ -144,7 +152,7 @@ def seed_demo_data():
                 "title": "Metrics & Engineering Wrap-up",
                 "short_description": "Interactive developer productivity dashboards and monthly GitHub activity recaps.",
                 "full_description": "Aggregates lines shipped, PR reviews, network collaborations, and badge achievements into exportable reports.",
-                "category": ProjectCategory.DATA_SCIENCE,
+                "category": ProjectCategory.PRODUCTIVITY,
                 "visibility": ProjectVisibility.PUBLIC,
                 "cover_image_url": "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=1200&h=630&fit=crop",
                 "github_url": "https://github.com/manasi-eng/metrics-wrapup",
