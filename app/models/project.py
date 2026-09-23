@@ -35,12 +35,6 @@ class Project(Base):
     cover_image_url = Column(String, nullable=True)
     demo_video_url = Column(String, nullable=True)
 
-    # Extended project analysis & collaboration fields
-    github_url = Column(String, nullable=True)
-    analysis_summary = Column(Text, nullable=True)
-    complexity = Column(String(32), nullable=True)  # Beginner, Intermediate, Advanced
-    contribution_info = Column(Text, nullable=True)
-
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -50,7 +44,3 @@ class Project(Base):
         secondary=project_tech,
         back_populates="projects"
     )
-
-    collaborators = relationship("ProjectCollaborator", back_populates="project", cascade="all, delete-orphan")
-    collaboration_requests = relationship("CollaborationRequest", back_populates="project", cascade="all, delete-orphan")
-    activities = relationship("NetworkActivity", back_populates="project", cascade="all, delete-orphan")

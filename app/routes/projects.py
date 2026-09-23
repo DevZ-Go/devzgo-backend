@@ -56,25 +56,6 @@ def create_project(
     db.commit()
     db.refresh(new_project)
 
-    try:
-        from app.models.network import NetworkActivity
-        author_name = (
-            current_user.profile.full_name
-            if current_user.profile and current_user.profile.full_name
-            else current_user.username
-        )
-        activity = NetworkActivity(
-            user_id=current_user.id,
-            activity_type="project_added",
-            project_id=new_project.id,
-            title=f"{author_name} added a new project: {new_project.title}",
-            content=new_project.short_description or f"Check out {new_project.title} on DevZ-Go!",
-        )
-        db.add(activity)
-        db.commit()
-    except Exception:
-        pass
-
     return build_project_response(
         new_project, current_user.username, viewer_user_id=current_user.id
     )
