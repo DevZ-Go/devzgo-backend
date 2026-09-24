@@ -1,10 +1,17 @@
 """
-Main application file for the DevZGo backend. This sets up the FastAPI app, includes route modules, 
+Main application file for the DevZGo backend. This sets up the FastAPI app, includes route modules,
 and ensures database tables are created on startup.
 The root endpoint provides a simple health check to confirm the backend is running.
+
+Storage note: only covers and videos are publicly mounted. Project workspaces stay
+behind permissioned /projects/{id}/file routes.
 """
 
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -24,9 +31,6 @@ from app.routes.collaborations import router as collaborations_router
 from app.routes.notifications import router as notifications_router
 from app.routes.profiles import router as profiles_router
 from app.routes.analytics import router as analytics_router
-
-from fastapi.staticfiles import StaticFiles
-
 from app.routes.media import router as media_router
 
 app = FastAPI(
@@ -62,7 +66,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/storage", StaticFiles(directory="storage"), name="storage")
+# Public media only. Do not mount storage/project_<uuid>/ (private workspaces).
+storage_root = Path("storage")
+covers_dir = storage_root / "covers"
+videos_dir = storage_root / "videos"
+covers_dir.mkdir(parents=True, exist_ok=True)
+videos_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/storage/covers", StaticFiles(directory=str(covers_dir)), name="storage_covers")
+app.mount("/storage/videos", StaticFiles(directory=str(videos_dir)), name="storage_videos")
 app.include_router(media_router)
 
 # Create the database tables based on the models defined in the Base metadata.

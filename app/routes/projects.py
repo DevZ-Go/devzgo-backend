@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -10,14 +11,27 @@ from app.models.file import File as FileRecord
 from app.models.project import Project
 from app.models.techstack import TechStack
 from app.models.enums import ProjectCategory, ProjectVisibility
-from app.schemas.project import ProjectCreate, ProjectFileEntry, ProjectResponse
+from app.schemas.project import (
+    ProjectAnalysisResponse,
+    ProjectCreate,
+    ProjectFileContentResponse,
+    ProjectFileEntry,
+    ProjectResponse,
+)
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.routes.workspace_upload import perform_workspace_zip_upload
 from app.services.project_storage import delete_all_project_storage
+from app.services.workspace_files import (
+    is_image_path,
+    is_secret_path,
+    language_for_path,
+    normalize_relative_path,
+    resolve_workspace_file,
+    sniff_is_binary,
+)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
-STORAGE_ROOT = Path("storage")
 
 
 # ---------------- CREATE PROJECT ----------------
@@ -130,6 +144,33 @@ def list_techstacks(db: Session = Depends(get_db)):
     return [{"id": tech.id, "name": tech.name} for tech in tech_stacks]
 
 
+# ---------------- PROJECT ANALYSIS ----------------
+@router.get("/{project_id}/analysis", response_model=ProjectAnalysisResponse)
+def get_project_analysis(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Return stored language stats and detected vs confirmed tech stacks."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.visibility == ProjectVisibility.PRIVATE:
+        if current_user is None or project.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Private project")
+
+    detected_names, detected_ids = _detected_names_for_project(project)
+    return ProjectAnalysisResponse(
+        project_id=project.id,
+        languages=project.language_stats or [],
+        detected_tech_stacks=detected_names,
+        detected_tech_stack_ids=detected_ids,
+        confirmed_tech_stacks=[t.name for t in project.tech_stacks],
+        confirmed_tech_stack_ids=[int(t.id) for t in project.tech_stacks],
+    )
+
+
 # ---------------- WORKSPACE ZIP (must be before GET /{project_id}) ----------------
 @router.post("/{project_id}/workspace/upload")
 def upload_project_workspace(
@@ -179,36 +220,27 @@ def list_project_files(
     return rows
 
 
-# ---------------- READ ONE PROJECT FILE ----------------
-@router.get("/{project_id}/file")
-def read_project_file(
-    project_id: UUID,
-    path: str = Query(..., min_length=1, description="Relative path inside project workspace"),
-    db: Session = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
-):
-    """
-    Read a single file from storage/project_<project_id>/ using a safe relative path.
-
-    Public project: readable by anyone.
-    Private project: only owner may read.
-    """
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
+def _require_project_file_access(
+    project: Project,
+    current_user: Optional[User],
+) -> None:
     if project.visibility == ProjectVisibility.PRIVATE:
         if current_user is None or project.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="Private project")
 
-    # Keep behavior stable across clients: handle leading "./", "\" separators, and accidental spaces.
-    raw_relative = path.strip().replace("\\", "/").lstrip("/")
-    relative_parts = [p for p in raw_relative.split("/") if p not in ("", ".")]
-    if not relative_parts or ".." in relative_parts:
-        raise HTTPException(status_code=400, detail="Invalid file path")
-    relative = "/".join(relative_parts)
 
-    # Prefer DB path if provided path differs only by client normalization.
+def _resolve_indexed_relative_path(
+    project_id: UUID,
+    path: str,
+    db: Session,
+) -> str:
+    """Normalize path and prefer the indexed files.file_path when present."""
+    try:
+        relative = normalize_relative_path(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid file path") from exc
+
+    raw_relative = path.strip().replace("\\", "/").lstrip("/")
     file_row = (
         db.query(FileRecord)
         .filter(
@@ -218,7 +250,7 @@ def read_project_file(
         )
         .first()
     )
-    if file_row is None:
+    if file_row is None and raw_relative != relative:
         file_row = (
             db.query(FileRecord)
             .filter(
@@ -229,31 +261,135 @@ def read_project_file(
             .first()
         )
     if file_row is not None:
-        relative = file_row.file_path
+        return file_row.file_path
+    return relative
 
-    workspace_root = STORAGE_ROOT / f"project_{project_id}"
-    full_path = workspace_root / relative
+
+# ---------------- RAW WORKSPACE FILE (permissioned; images/media) ----------------
+@router.get("/{project_id}/file/raw")
+def read_project_file_raw(
+    project_id: UUID,
+    path: str = Query(..., min_length=1, description="Relative path inside project workspace"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    Stream a workspace file with the same visibility rules as JSON preview.
+    Used for image previews instead of public /storage/project_* URLs.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    _require_project_file_access(project, current_user)
+    relative = _resolve_indexed_relative_path(project_id, path, db)
+
+    is_owner = current_user is not None and project.owner_id == current_user.id
+    if is_secret_path(relative) and not is_owner:
+        raise HTTPException(
+            status_code=403,
+            detail="This file may contain secrets and is hidden from public preview.",
+        )
+
     try:
-        resolved_root = workspace_root.resolve()
-        resolved_file = full_path.resolve()
-        resolved_file.relative_to(resolved_root)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid file path")
+        resolved_file = resolve_workspace_file(project_id, relative)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
 
-    # If the DB row exists but storage path changed shape, try a second normalized fallback.
-    if (not resolved_file.exists() or not resolved_file.is_file()) and file_row is not None:
-        fallback_relative = file_row.file_path.strip().replace("\\", "/").lstrip("./")
-        resolved_file = (workspace_root / fallback_relative).resolve()
+    return FileResponse(
+        path=resolved_file,
+        filename=Path(relative).name,
+        content_disposition_type="inline",
+    )
 
-    if not resolved_file.exists() or not resolved_file.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+
+# ---------------- READ ONE PROJECT FILE (JSON preview) ----------------
+@router.get("/{project_id}/file", response_model=ProjectFileContentResponse)
+def read_project_file(
+    project_id: UUID,
+    path: str = Query(..., min_length=1, description="Relative path inside project workspace"),
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """
+    Read a single workspace file as a safe JSON preview.
+
+    Public project: readable by anyone (secrets withheld for non-owners).
+    Private project: only owner may read.
+    Binary files return metadata without content.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    _require_project_file_access(project, current_user)
+    relative = _resolve_indexed_relative_path(project_id, path, db)
 
     try:
-        content = resolved_file.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        raise HTTPException(status_code=500, detail="Failed to read file")
+        resolved_file = resolve_workspace_file(project_id, relative)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
 
-    return {"content": content}
+    name = Path(relative).name
+    extension = Path(relative).suffix.lower()
+    size = resolved_file.stat().st_size
+    secret = is_secret_path(relative)
+    is_owner = current_user is not None and project.owner_id == current_user.id
+    image = is_image_path(relative)
+
+    base = ProjectFileContentResponse(
+        path=relative,
+        name=name,
+        extension=extension,
+        language=language_for_path(relative),
+        size=size,
+        is_binary=False,
+        is_secret=secret,
+        is_image=image,
+        content=None,
+        message=None,
+    )
+
+    if secret and not is_owner:
+        base.message = "This file may contain secrets and is hidden from public preview."
+        return base
+
+    try:
+        sample = resolved_file.read_bytes()[:8192]
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to read file") from exc
+
+    binary = sniff_is_binary(sample, relative)
+    base.is_binary = binary
+
+    if binary:
+        if image:
+            base.message = "Image file — use the raw file endpoint for preview."
+        else:
+            base.message = "Binary file — content preview is not available."
+        return base
+
+    try:
+        raw = resolved_file.read_bytes()
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        base.is_binary = True
+        base.message = "File is not valid UTF-8 text — content preview is not available."
+        return base
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to read file") from exc
+
+    max_preview = 2 * 1024 * 1024
+    if len(content) > max_preview:
+        content = content[:max_preview]
+        base.message = "File truncated for preview (first 2 MiB)."
+
+    base.content = content
+    return base
 
 
 # ---------------- GET SINGLE PROJECT ----------------
@@ -379,6 +515,29 @@ def delete_project(
 
 
 # ---------------- HELPER FUNCTION ----------------
+def _detected_names_for_project(project: Project) -> tuple[list[str], list[int]]:
+    from sqlalchemy.orm import object_session
+
+    raw_ids = project.detected_tech_stack_ids or []
+    ids: list[int] = []
+    for x in raw_ids:
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return [], []
+
+    db = object_session(project)
+    if db is None:
+        return [], ids
+
+    rows = db.query(TechStack).filter(TechStack.id.in_(ids)).all()
+    by_id = {int(t.id): t.name for t in rows}
+    names = [by_id[i] for i in ids if i in by_id]
+    return names, [i for i in ids if i in by_id]
+
+
 def build_project_response(
     project: Project,
     owner_username: str,
@@ -388,6 +547,9 @@ def build_project_response(
     is_owner = (
         viewer_user_id is not None and project.owner_id == viewer_user_id
     )
+    detected_names, detected_ids = _detected_names_for_project(project)
+    languages = project.language_stats or []
+
     return ProjectResponse(
         id=project.id,
         owner_id=project.owner_id,
@@ -405,4 +567,7 @@ def build_project_response(
         owner_username=owner_username,
         tech_stacks=[tech.name for tech in project.tech_stacks],
         tech_stack_ids=[tech.id for tech in project.tech_stacks],
+        languages=languages,
+        detected_tech_stacks=detected_names,
+        detected_tech_stack_ids=detected_ids,
     )

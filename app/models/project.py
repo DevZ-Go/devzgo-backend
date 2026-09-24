@@ -1,7 +1,7 @@
 import uuid
 from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Table, Text
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
 from app.db.session import Base
@@ -40,6 +40,11 @@ class Project(Base):
     analysis_summary = Column(Text, nullable=True)
     complexity = Column(String(32), nullable=True)  # Beginner, Intermediate, Advanced
     contribution_info = Column(Text, nullable=True)
+    # Auto-analysis (separate from confirmed tech_stacks and from analysis_summary text).
+    # [{"name": "TypeScript", "percentage": 64.8}, ...]
+    language_stats = Column(JSONB, nullable=True)
+    # [1, 5, 12] — TechStack catalog ids from the last workspace analysis
+    detected_tech_stack_ids = Column(JSONB, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
