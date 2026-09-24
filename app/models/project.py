@@ -1,7 +1,7 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Table, Text
+from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Text
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 
 from app.db.session import Base
@@ -10,16 +10,11 @@ from app.models.enums import ProjectCategory, ProjectVisibility
 from app.models.associations import project_tech
 
 
-''' The below class represents the Project model with its attributes and relationships to TechStack. 
- It includes fields for name, description, category, visibility, and timestamps for creation and 
- updates. The many-to-many relationship with TechStack is established through the project_techS 
- association table. '''
-
 class Project(Base):
-    __tablename__ = 'projects'
+    __tablename__ = "projects"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    owner_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
 
     title = Column(String, index=True, nullable=False)
     short_description = Column(String, nullable=True)
@@ -35,6 +30,12 @@ class Project(Base):
     cover_image_url = Column(String, nullable=True)
     demo_video_url = Column(String, nullable=True)
 
+    # Auto-analysis (separate from confirmed tech_stacks M2M).
+    # [{"name": "TypeScript", "percentage": 64.8}, ...]
+    language_stats = Column(JSONB, nullable=True)
+    # [1, 5, 12] — TechStack catalog ids from last workspace analysis
+    detected_tech_stack_ids = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -42,5 +43,5 @@ class Project(Base):
     tech_stacks = relationship(
         "TechStack",
         secondary=project_tech,
-        back_populates="projects"
+        back_populates="projects",
     )

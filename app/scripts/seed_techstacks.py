@@ -20,6 +20,7 @@ tech_names = [
     "Vue.js",
     "Django",
     "Flask",
+    "FastAPI",
     "Spring Boot",
     "ASP.NET",
     "Express.js",
@@ -41,7 +42,9 @@ tech_names = [
     "React Native",
     "Ionic",
     "Node.js",
-    "Next.js"
+    "Next.js",
+    "Vite",
+    "Tailwind CSS",
 ]
 
 def seed():

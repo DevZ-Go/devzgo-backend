@@ -1,26 +1,27 @@
 """
-Main application file for the DevZGo backend. This sets up the FastAPI app, includes route modules, 
+Main application file for the DevZGo backend. This sets up the FastAPI app, includes route modules,
 and ensures database tables are created on startup.
 The root endpoint provides a simple health check to confirm the backend is running.
+
+Storage note
+------------
+Only `storage/covers` and `storage/videos` are mounted as public static files.
+Project workspaces (`storage/project_<uuid>/`) are NEVER publicly mounted — they are
+served only through permissioned API routes under `/projects/{id}/file` and `/file/raw`.
 """
 
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-
-# Importing CORSMiddleware to handle Cross-Origin Resource Sharing, allowing the frontend to communicate with the backend
 from fastapi.middleware.cors import CORSMiddleware
 
-# Importing the database base and engine to ensure that the database tables are created when the application starts
-from app.db.base import Base
-from app.db.session import engine
 from app.routes.auth import router as auth_router
-
 from app.routes.projects import router as projects_router
-
-from fastapi.staticfiles import StaticFiles
-
 from app.routes.media import router as media_router
 
 app = FastAPI(
@@ -55,7 +56,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/storage", StaticFiles(directory="storage"), name="storage")
+# Public media only — do NOT mount the whole storage/ tree (workspaces are private).
+storage_root = Path("storage")
+covers_dir = storage_root / "covers"
+videos_dir = storage_root / "videos"
+covers_dir.mkdir(parents=True, exist_ok=True)
+videos_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/storage/covers", StaticFiles(directory=str(covers_dir)), name="storage_covers")
+app.mount("/storage/videos", StaticFiles(directory=str(videos_dir)), name="storage_videos")
+
 app.include_router(media_router)
 
 # Create the database tables based on the models defined in the Base metadata
@@ -68,6 +77,7 @@ static_dir = Path(__file__).resolve().parent / "static"
 static_dir.mkdir(parents=True, exist_ok=True)
 (static_dir / "covers").mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 
 @app.get("/")
 def root():

@@ -1,24 +1,9 @@
 """
-ZIP workspace upload — core logic only (no FastAPI router here).
+ZIP workspace upload — orchestration (no FastAPI router here).
 
-Why logic lives in this module
-------------------------------
-Keeps extraction, zip-slip checks, and DB indexing in one testable place.
-Routes are declared in app.routes.projects so paths stay under /projects/...
-and are registered in the correct order (before GET /projects/{id}).
-
-End-to-end flow (perform_workspace_zip_upload)
-----------------------------------------------
-1. Validate filename ends with .zip.
-2. Confirm project exists and current_user is the owner.
-3. Stream the upload to a temp .zip file.
-4. DELETE all File rows for this project (clean slate).
-5. Delete old storage/project_<uuid>/ folder if present; recreate empty.
-6. safe_extract_zip: write files under that folder; skip malicious paths.
-7. build_file_records_from_workspace: os.walk → new File rows (dirs + files).
-8. commit; delete temp zip; close upload stream.
-
-See perform_workspace_zip_upload() for the orchestration.
+Extraction: app.services.workspace_extract
+Analysis:   app.services.project_analysis
+Routes:     app.routes.projects
 """
 
 from __future__ import annotations
@@ -26,7 +11,6 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-import zipfile
 from pathlib import Path
 from uuid import UUID
 
@@ -35,28 +19,18 @@ from sqlalchemy.orm import Session
 
 from app.models.file import File as FileRecord
 from app.models.project import Project
-from app.models.techstack import TechStack
 from app.models.user import User
-
-STORAGE_ROOT = Path("storage")
-# One pass per file: extensions map to catalog names (see seed_techstacks). Unknown
-# extensions contribute nothing; unknown catalog names are skipped in sync.
-EXTENSION_TO_TECHS: dict[str, list[str]] = {
-    ".py": ["Python"],
-    ".js": ["JavaScript"],
-    ".jsx": ["React"],
-    ".ts": ["TypeScript"],
-    ".tsx": ["TypeScript", "React"],
-    ".java": ["Java"],
-    ".html": ["HTML"],
-    ".css": ["CSS"],
-    ".json": ["JSON"],
-}
-
-
-def workspace_dir_for_project(project_id: UUID) -> Path:
-    """Directory on disk where the extracted tree lives: storage/project_<uuid>/."""
-    return STORAGE_ROOT / f"project_{project_id}"
+from app.services.project_analysis import (
+    analyze_workspace,
+    resolve_tech_stacks_from_names,
+)
+from app.services.workspace_extract import (
+    MAX_EXTRACTED_BYTES,
+    MAX_FILE_COUNT,
+    MAX_UPLOAD_BYTES,
+    safe_extract_zip,
+)
+from app.services.workspace_files import STORAGE_ROOT, workspace_dir_for_project
 
 
 def _is_zip_upload(upload: UploadFile) -> bool:
@@ -65,37 +39,29 @@ def _is_zip_upload(upload: UploadFile) -> bool:
     return name.endswith(".zip")
 
 
-def safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
-    """
-    Extract archive under dest_dir; block zip-slip (.., absolute paths).
-    Each member is resolved and must stay under dest_dir.resolve().
-    """
-    dest_dir = dest_dir.resolve()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        for member in zf.infolist():
-            raw_name = member.filename
-            if not raw_name:
-                continue
-
-            rel = Path(raw_name)
-            if rel.is_absolute() or ".." in rel.parts:
-                continue
-
-            target = (dest_dir / rel).resolve()
-            try:
-                target.relative_to(dest_dir)
-            except ValueError:
-                continue
-
-            is_dir = member.is_dir() if hasattr(member, "is_dir") else raw_name.endswith("/")
-            if is_dir:
-                target.mkdir(parents=True, exist_ok=True)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member, "r") as source, open(target, "wb") as out:
-                    shutil.copyfileobj(source, out)
+def _stream_upload_to_temp(upload: UploadFile, max_bytes: int) -> Path:
+    """Write upload to a temp file; raise 400 if larger than max_bytes."""
+    chunk_size = 1024 * 1024
+    total = 0
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        while True:
+            chunk = upload.file.read(chunk_size)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                tmp.close()
+                tmp_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"ZIP upload exceeds maximum size of "
+                        f"{max_bytes // (1024 * 1024)} MiB"
+                    ),
+                )
+            tmp.write(chunk)
+    return tmp_path
 
 
 def _parent_path_for_relative(rel: Path) -> str | None:
@@ -119,7 +85,7 @@ def build_file_records_from_workspace(
     rows: list[FileRecord] = []
     file_count = 0
 
-    for dirpath, _dirnames, _filenames in os.walk(workspace_root):
+    for dirpath, _dirnames, _filenames in os.walk(workspace_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(workspace_root)
         if rel_dir == Path("."):
             continue
@@ -134,9 +100,12 @@ def build_file_records_from_workspace(
             )
         )
 
-    for dirpath, _dirnames, filenames in os.walk(workspace_root):
+    for dirpath, _dirnames, filenames in os.walk(workspace_root, followlinks=False):
         rel_parent = Path(dirpath).relative_to(workspace_root)
         for fname in filenames:
+            abs_file = Path(dirpath) / fname
+            if abs_file.is_symlink():
+                continue
             rel_file = rel_parent / fname if rel_parent != Path(".") else Path(fname)
             posix_file = rel_file.as_posix()
             rows.append(
@@ -153,49 +122,34 @@ def build_file_records_from_workspace(
     return rows, file_count
 
 
-def detect_tech_stack_names(file_rows: list[FileRecord]) -> list[str]:
-    """Detect tech names from file extensions (simple deterministic mapping)."""
-    detected: set[str] = set()
-    for row in file_rows:
-        if row.is_directory:
-            continue
-        ext = Path(row.file_name).suffix.lower()
-        techs = EXTENSION_TO_TECHS.get(ext, [])
-        for tech in techs:
-            detected.add(tech)
-    return sorted(detected)
-
-
-def sync_project_tech_stacks(
-    db: Session, project: Project, detected_names: list[str]
-) -> list[str]:
+def apply_analysis_to_project(
+    db: Session, project: Project, workspace_root: Path
+) -> dict:
     """
-    Link project.tech_stacks to names that match existing TechStack rows.
+    Run ProjectAnalysisService-equivalent analysis and persist results.
 
-    Detection is driven only by file extensions present in the workspace. Names that
-    are not in the catalog are skipped silently (no new rows, no extra messaging).
+    - Always updates language_stats + detected_tech_stack_ids.
+    - Only auto-fills confirmed tech_stacks when the project currently has none
+      (first upload). Re-uploads do not wipe user-confirmed stacks.
     """
-    if not detected_names:
-        project.tech_stacks = []
-        return []
+    result = analyze_workspace(workspace_root)
+    linked, linked_names, linked_ids = resolve_tech_stacks_from_names(
+        db, result.tech_names
+    )
 
-    existing = db.query(TechStack).all()
-    by_lower = {t.name.lower(): t for t in existing}
-    linked: list[TechStack] = []
-    seen_ids: set[int] = set()
-    for name in detected_names:
-        key = name.lower()
-        tech = by_lower.get(key)
-        if tech is None:
-            continue
-        tid = int(tech.id)
-        if tid in seen_ids:
-            continue
-        seen_ids.add(tid)
-        linked.append(tech)
+    project.language_stats = result.languages
+    project.detected_tech_stack_ids = linked_ids
 
-    project.tech_stacks = linked
-    return [t.name for t in linked]
+    had_confirmed = bool(project.tech_stacks)
+    if not had_confirmed and linked:
+        project.tech_stacks = linked
+
+    return {
+        "languages": result.languages,
+        "detected_tech_stacks": linked_names,
+        "detected_tech_stack_ids": linked_ids,
+        "applied_to_confirmed": not had_confirmed and bool(linked),
+    }
 
 
 def perform_workspace_zip_upload(
@@ -205,11 +159,10 @@ def perform_workspace_zip_upload(
     current_user: User,
 ) -> dict:
     """
-    Run the full workspace replacement: extract ZIP, rebuild files table.
+    Run the full workspace replacement: extract ZIP, rebuild files table, analyze.
 
-    Returns: {"message": str, "total_files": int}
-
-    Side effects: closes file.file, deletes temp zip, commits DB on success.
+    Returns upload metadata including languages and detected tech stacks.
+    Does not overwrite confirmed tech_stacks when the project already has some.
     """
     if not _is_zip_upload(file):
         raise HTTPException(
@@ -227,9 +180,7 @@ def perform_workspace_zip_upload(
     tmp_zip: Path | None = None
 
     try:
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-            tmp_zip = Path(tmp.name)
-            shutil.copyfileobj(file.file, tmp)
+        tmp_zip = _stream_upload_to_temp(file, MAX_UPLOAD_BYTES)
 
         db.query(FileRecord).filter(FileRecord.project_id == project_id).delete(
             synchronize_session=False
@@ -241,19 +192,27 @@ def perform_workspace_zip_upload(
 
         safe_extract_zip(tmp_zip, workspace_root)
 
-        new_rows, total_files = build_file_records_from_workspace(project_id, workspace_root)
+        new_rows, total_files = build_file_records_from_workspace(
+            project_id, workspace_root
+        )
         for row in new_rows:
             db.add(row)
-        detected_names = detect_tech_stack_names(new_rows)
-        detected_linked = sync_project_tech_stacks(db, project, detected_names)
+
+        analysis = apply_analysis_to_project(db, project, workspace_root)
 
         db.commit()
 
         return {
             "message": "Workspace uploaded successfully",
             "total_files": total_files,
-            "detected_tech_stacks": detected_linked,
+            "detected_tech_stacks": analysis["detected_tech_stacks"],
+            "detected_tech_stack_ids": analysis["detected_tech_stack_ids"],
+            "languages": analysis["languages"],
+            "applied_to_confirmed": analysis["applied_to_confirmed"],
         }
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception:
         db.rollback()
         raise
@@ -261,3 +220,16 @@ def perform_workspace_zip_upload(
         file.file.close()
         if tmp_zip is not None and tmp_zip.exists():
             tmp_zip.unlink(missing_ok=True)
+
+
+__all__ = [
+    "MAX_UPLOAD_BYTES",
+    "MAX_EXTRACTED_BYTES",
+    "MAX_FILE_COUNT",
+    "STORAGE_ROOT",
+    "workspace_dir_for_project",
+    "safe_extract_zip",
+    "perform_workspace_zip_upload",
+    "apply_analysis_to_project",
+    "build_file_records_from_workspace",
+]
