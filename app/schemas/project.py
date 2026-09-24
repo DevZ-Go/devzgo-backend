@@ -34,6 +34,35 @@ class ProjectCreate(BaseModel):
             return self.model_copy(update={"category_other": None})
         return self
 
+class ProjectFileContentResponse(BaseModel):
+    """Safe text preview of one workspace file (or metadata-only for binary/secret)."""
+
+    path: str
+    name: str
+    extension: str
+    language: Optional[str] = None
+    size: int
+    is_binary: bool = False
+    is_secret: bool = False
+    is_image: bool = False
+    content: Optional[str] = None
+    message: Optional[str] = None
+
+
+class LanguageStat(BaseModel):
+    name: str
+    percentage: float
+
+
+class ProjectAnalysisResponse(BaseModel):
+    project_id: UUID
+    languages: List[LanguageStat] = []
+    detected_tech_stacks: List[str] = []
+    detected_tech_stack_ids: List[int] = []
+    confirmed_tech_stacks: List[str] = []
+    confirmed_tech_stack_ids: List[int] = []
+
+
 class ProjectFileEntry(BaseModel):
     """One row from the files table (workspace tree or attachment metadata)."""
 
@@ -67,6 +96,9 @@ class ProjectResponse(BaseModel):
     owner_username: str
     tech_stacks: List[str] = []
     tech_stack_ids: List[int] = []
+    languages: List[LanguageStat] = []
+    detected_tech_stacks: List[str] = []
+    detected_tech_stack_ids: List[int] = []
 
     class Config:
         from_attributes = True
