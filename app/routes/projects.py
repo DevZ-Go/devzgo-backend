@@ -61,33 +61,137 @@ def create_project(
     )
 
 
+# # ---------------- LIST PUBLIC PROJECTS ----------------
+# @router.get("", response_model=List[ProjectResponse])
+# def list_public_projects(
+#     tech_stack_id: int | None = None,
+#     db: Session = Depends(get_db),
+#     current_user: Optional[User] = Depends(get_current_user_optional),
+# ):
+#     query = db.query(Project).filter(
+#         Project.visibility == ProjectVisibility.PUBLIC
+#     )
+
+#     if tech_stack_id:
+#         query = query.join(Project.tech_stacks).filter(
+#             TechStack.id == tech_stack_id
+#         )
+
+#     projects = query.all()
+
+#     vid = current_user.id if current_user else None
+#     return [
+#         build_project_response(p, p.owner.username, viewer_user_id=vid)
+#         for p in projects
+#     ]
+
+
 # ---------------- LIST PUBLIC PROJECTS ----------------
 @router.get("", response_model=List[ProjectResponse])
 def list_public_projects(
-    tech_stack_id: int | None = None,
+    search: str | None = Query(
+        default=None,
+        description="Search by project title or description",
+    ),
+    category: ProjectCategory | None = Query(
+        default=None,
+        description="Filter by project category",
+    ),
+    tech_stack_ids: str | None = Query(
+        default=None,
+        description="Comma-separated technology stack IDs. Projects must contain all selected technologies.",
+    ),
+    sort_by: str = Query(
+        default="newest",
+        description="Sort projects by newest, oldest, updated, title A-Z, or title Z-A",
+    ),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
+    """
+    Return public projects for the Explore page.
+
+    Optional filters:
+    - search: searches project title and descriptions
+    - category: filters by project category
+    - tech_stack_ids: comma-separated technology IDs; project must contain all
+    - sort_by: newest, oldest, updated, title_asc, or title_desc
+    """
+
     query = db.query(Project).filter(
         Project.visibility == ProjectVisibility.PUBLIC
     )
 
-    if tech_stack_id:
-        query = query.join(Project.tech_stacks).filter(
-            TechStack.id == tech_stack_id
+    # ---------------- SEARCH ----------------
+    if search and search.strip():
+        search_term = f"%{search.strip()}%"
+
+        query = query.filter(
+            Project.title.ilike(search_term)
+            | Project.short_description.ilike(search_term)
+            | Project.full_description.ilike(search_term)
         )
+
+    # ---------------- CATEGORY ----------------
+    if category is not None:
+        query = query.filter(Project.category == category)
+
+    # ---------------- TECHNOLOGIES ----------------
+    selected_tech_stack_ids: list[int] = []
+
+    if tech_stack_ids:
+        try:
+            selected_tech_stack_ids = [
+                int(value.strip())
+                for value in tech_stack_ids.split(",")
+                if value.strip()
+            ]
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="tech_stack_ids must contain comma-separated numeric IDs",
+            )
+
+    # Project must contain ALL selected technologies
+    for tech_id in selected_tech_stack_ids:
+        query = query.filter(
+            Project.tech_stacks.any(TechStack.id == tech_id)
+        )
+
+# ---------------- SORTING ----------------
+    if sort_by == "newest":
+        query = query.order_by(Project.created_at.desc())
+
+    elif sort_by == "oldest":
+        query = query.order_by(Project.created_at.asc())
+
+    elif sort_by == "updated":
+        query = query.order_by(Project.updated_at.desc())
+
+    elif sort_by == "title_asc":
+        query = query.order_by(Project.title.asc())
+
+    elif sort_by == "title_desc":
+        query = query.order_by(Project.title.desc())
+
+    else:
+        query = query.order_by(Project.created_at.desc())
 
     projects = query.all()
 
     vid = current_user.id if current_user else None
+
     return [
-        build_project_response(p, p.owner.username, viewer_user_id=vid)
+        build_project_response(
+            p,
+            p.owner.username,
+            viewer_user_id=vid,
+        )
         for p in projects
     ]
 
-
 # ---------------- LIST MY PROJECTS ----------------
-# 🔥 IMPORTANT: must come BEFORE /{project_id}
+# IMPORTANT: must come BEFORE /{project_id}
 @router.get("/me", response_model=List[ProjectResponse])
 def list_my_projects(
     db: Session = Depends(get_db),
@@ -104,7 +208,7 @@ def list_my_projects(
 
 
 # ---------------- LIST TECH STACKS ----------------
-# 🔥 IMPORTANT: must come BEFORE /{project_id}
+# IMPORTANT: must come BEFORE /{project_id}
 @router.get("/techstacks")
 def list_techstacks(db: Session = Depends(get_db)):
     tech_stacks = db.query(TechStack).all()
