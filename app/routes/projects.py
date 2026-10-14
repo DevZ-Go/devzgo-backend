@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -21,12 +21,14 @@ from app.schemas.project import (
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.routes.workspace_upload import perform_workspace_zip_upload
+from app.services import storage
 from app.services.project_storage import delete_all_project_storage
 from app.services.workspace_files import (
     is_image_path,
     is_secret_path,
     language_for_path,
     normalize_relative_path,
+    read_workspace_file,
     resolve_workspace_file,
     sniff_is_binary,
 )
@@ -370,6 +372,8 @@ def read_project_file_raw(
             detail="This file may contain secrets and is hidden from public preview.",
         )
 
+    if storage.is_s3():
+        return RedirectResponse(storage.url(f"project_{project_id}/{relative}", 300, Path(relative).name))
     try:
         resolved_file = resolve_workspace_file(project_id, relative)
     except ValueError as exc:
@@ -407,15 +411,17 @@ def read_project_file(
     relative = _resolve_indexed_relative_path(project_id, path, db)
 
     try:
-        resolved_file = resolve_workspace_file(project_id, relative)
+        raw = read_workspace_file(project_id, relative)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="File not found") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to read file") from exc
 
     name = Path(relative).name
     extension = Path(relative).suffix.lower()
-    size = resolved_file.stat().st_size
+    size = len(raw)
     secret = is_secret_path(relative)
     is_owner = current_user is not None and project.owner_id == current_user.id
     image = is_image_path(relative)
@@ -437,12 +443,7 @@ def read_project_file(
         base.message = "This file may contain secrets and is hidden from public preview."
         return base
 
-    try:
-        sample = resolved_file.read_bytes()[:8192]
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Failed to read file") from exc
-
-    binary = sniff_is_binary(sample, relative)
+    binary = sniff_is_binary(raw[:8192], relative)
     base.is_binary = binary
 
     if binary:
@@ -453,14 +454,11 @@ def read_project_file(
         return base
 
     try:
-        raw = resolved_file.read_bytes()
         content = raw.decode("utf-8")
     except UnicodeDecodeError:
         base.is_binary = True
         base.message = "File is not valid UTF-8 text — content preview is not available."
         return base
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Failed to read file") from exc
 
     max_preview = 2 * 1024 * 1024
     if len(content) > max_preview:

@@ -1,4 +1,3 @@
-version: '3.9'
 # To resolve tgge problem of Multi-Container Application we use ths to run all needed
 services:
   db:
@@ -13,15 +12,48 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  # Local S3-compatible bucket (console: http://localhost:9001, devzgo / devzgo-secret)
+  s3:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: devzgo
+      RUSTFS_SECRET_KEY: devzgo-secret
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - s3_data:/data
+
+  s3-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      - s3
+    environment:
+      AWS_ACCESS_KEY_ID: devzgo
+      AWS_SECRET_ACCESS_KEY: devzgo-secret
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["sh", "-c", "until aws --endpoint-url http://s3:9000 s3api head-bucket --bucket devzgo 2>/dev/null || aws --endpoint-url http://s3:9000 s3 mb s3://devzgo; do sleep 2; done"]
+
   backend:
     build: .
     depends_on:
       - db
+      - s3-init
     ports:
       - "8000:8000"
+    # Overrides come from your shell or a .env file next to this compose file; defaults are for local dev.
+    # DOCKER_DATABASE_URL (not DATABASE_URL) so a localhost URL in .env never leaks into the container.
     environment:
-      DATABASE_URL: "postgresql://devzgo:devzgo@db:5432/devzgo_db"
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://devzgo:devzgo@db:5432/devzgo_db}
       SECRET_KEY: "supersecretkey"
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-${S3_ENDPOINT_URL:-http://localhost:9000}}
+      S3_BUCKET: ${S3_BUCKET:-devzgo}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-devzgo}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-devzgo-secret}
     volumes:
       # Persist covers, videos, and extracted workspaces across rebuilds
       - backend_storage:/app/storage
@@ -29,3 +61,4 @@ services:
 volumes:
   postgres_data:
   backend_storage:
+  s3_data:
