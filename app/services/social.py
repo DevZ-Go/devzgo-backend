@@ -11,6 +11,7 @@ from app.models.enums import ProjectVisibility
 from app.models.notification import Notification
 from app.models.project import Project
 from app.models.user import User
+from app.realtime.broadcaster import queue_event
 from app.schemas.network import ConnectionUserSummary
 
 
@@ -65,4 +66,5 @@ def notify(
         recipient_id=recipient_id, actor_id=actor.id, type=type_, related_id=related_id, message=message[:255]
     )
     db.add(notif)
+    queue_event(db, recipient_id, {"type": "notification.new", "notification_type": type_, "message": notif.message})
     return notif

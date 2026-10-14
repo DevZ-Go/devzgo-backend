@@ -55,6 +55,16 @@ def get_current_user(
     return user
 
 
+def user_id_from_token(token: str | None) -> str | None:
+    """The user id (`sub`) of a valid JWT, else None."""
+    if not token:
+        return None
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM]).get("sub")
+    except JWTError:
+        return None
+
+
 def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer_optional),
     db: Session = Depends(get_db),

@@ -34,6 +34,8 @@ from app.routes.notifications import router as notifications_router
 from app.routes.profiles import router as profiles_router
 from app.routes.analytics import router as analytics_router
 from app.routes.media import router as media_router
+from app.routes.realtime import router as realtime_router
+from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
 app = FastAPI(
@@ -92,6 +94,12 @@ app.include_router(collaborations_router)
 app.include_router(notifications_router)
 app.include_router(profiles_router)
 app.include_router(analytics_router)
+app.include_router(realtime_router)
+
+
+@app.on_event("startup")
+async def start_realtime():
+    await broadcaster.start()
 
 static_dir = Path(__file__).resolve().parent / "static"
 static_dir.mkdir(parents=True, exist_ok=True)

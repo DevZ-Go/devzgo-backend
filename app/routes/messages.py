@@ -11,6 +11,7 @@ from app.models.user import User
 from app.models.message import Message
 from app.core.dependencies import get_current_user
 from app.services.social import display_name, notify, user_summary
+from app.realtime.broadcaster import broadcaster, queue_event
 from app.schemas.network import (
     MessageCreate,
     MessageResponse,
@@ -89,6 +90,7 @@ def get_message_thread(
     if not before and db.query(Message).filter(
         Message.sender_id == other_user_id, Message.receiver_id == me, Message.read.is_(False)
     ).update({"read": True}):
+        queue_event(db, other_user_id, {"type": "message.read", "by": str(me)})
         db.commit()
         for m in messages:
             if m.receiver_id == me:
@@ -120,6 +122,10 @@ def send_message(
            f"New message from {display_name(current_user)}: \"{snippet}\"")
     db.commit()
     db.refresh(new_msg)
+    broadcaster.publish(msg_data.receiver_id, {
+        "type": "message.new",
+        "message": _message_response(new_msg, msg_data.receiver_id).model_dump(mode="json"),
+    })
     return _message_response(new_msg, current_user.id)
 
 
@@ -129,11 +135,12 @@ def mark_thread_as_read(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    db.query(Message).filter(
+    if db.query(Message).filter(
         Message.sender_id == other_user_id,
         Message.receiver_id == current_user.id,
         Message.read.is_(False),
-    ).update({"read": True})
+    ).update({"read": True}):
+        queue_event(db, other_user_id, {"type": "message.read", "by": str(current_user.id)})
     db.commit()
     return {"message": "Messages marked as read"}
 
