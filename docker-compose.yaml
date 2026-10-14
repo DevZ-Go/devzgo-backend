@@ -22,6 +22,10 @@ services:
     environment:
       DATABASE_URL: "postgresql://devzgo:devzgo@db:5432/devzgo_db"
       SECRET_KEY: "supersecretkey"
+    volumes:
+      # Persist covers, videos, and extracted workspaces across rebuilds
+      - backend_storage:/app/storage
 
 volumes:
   postgres_data:
+  backend_storage:

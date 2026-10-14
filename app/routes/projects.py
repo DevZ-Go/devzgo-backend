@@ -94,31 +94,6 @@ def create_project(
     )
 
 
-# # ---------------- LIST PUBLIC PROJECTS ----------------
-# @router.get("", response_model=List[ProjectResponse])
-# def list_public_projects(
-#     tech_stack_id: int | None = None,
-#     db: Session = Depends(get_db),
-#     current_user: Optional[User] = Depends(get_current_user_optional),
-# ):
-#     query = db.query(Project).filter(
-#         Project.visibility == ProjectVisibility.PUBLIC
-#     )
-
-#     if tech_stack_id:
-#         query = query.join(Project.tech_stacks).filter(
-#             TechStack.id == tech_stack_id
-#         )
-
-#     projects = query.all()
-
-#     vid = current_user.id if current_user else None
-#     return [
-#         build_project_response(p, p.owner.username, viewer_user_id=vid)
-#         for p in projects
-#     ]
-
-
 # ---------------- LIST PUBLIC PROJECTS ----------------
 @router.get("", response_model=List[ProjectResponse])
 def list_public_projects(
