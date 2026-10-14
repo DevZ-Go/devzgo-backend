@@ -1,7 +1,9 @@
+import mimetypes
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -373,7 +375,17 @@ def read_project_file_raw(
         )
 
     if storage.is_s3():
-        return RedirectResponse(storage.url(f"project_{project_id}/{relative}", 300, Path(relative).name))
+        # Streamed, not redirected: the frontend fetches this with an auth header, and a
+        # cross-origin redirect to the bucket would need bucket CORS and drop that header.
+        try:
+            data = read_workspace_file(project_id, relative)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="File not found") from exc
+        return Response(
+            data,
+            media_type=mimetypes.guess_type(relative)[0] or "application/octet-stream",
+            headers={"Content-Disposition": "inline; filename*=UTF-8''" + quote(Path(relative).name)},
+        )
     try:
         resolved_file = resolve_workspace_file(project_id, relative)
     except ValueError as exc:

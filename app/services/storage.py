@@ -7,6 +7,7 @@ Keys mirror the local layout: covers/<name>, videos/<name>, project_<id>/<path>.
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import shutil
 from functools import lru_cache
@@ -42,7 +43,9 @@ def _client(public: bool = False):
 
 def save(key: str, fileobj: BinaryIO) -> None:
     if is_s3():
-        _client().upload_fileobj(fileobj, _bucket(), key)
+        # Without a ContentType the bucket serves binary/octet-stream, which some browsers won't play.
+        content_type = mimetypes.guess_type(key)[0]
+        _client().upload_fileobj(fileobj, _bucket(), key, ExtraArgs={"ContentType": content_type} if content_type else None)
         return
     path = ROOT / key
     path.parent.mkdir(parents=True, exist_ok=True)
