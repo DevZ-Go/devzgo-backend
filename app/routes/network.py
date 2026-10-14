@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, desc
@@ -272,8 +274,10 @@ def delete_activity_comment(
     db.commit()
     return {"message": "Comment deleted successfully"}
 
-@router.post("/seed-demo")
+@router.post("/seed-demo", include_in_schema=False)
 def trigger_seed_demo():
+    if os.getenv("ALLOW_DEMO_SEED", "").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not Found")
     from app.scripts.seed_demo_network import seed_demo_data
     seed_demo_data()
     return {"message": "Demo data seeded successfully"}
