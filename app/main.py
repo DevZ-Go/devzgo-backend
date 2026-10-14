@@ -35,6 +35,7 @@ from app.routes.profiles import router as profiles_router
 from app.routes.analytics import router as analytics_router
 from app.routes.media import router as media_router
 from app.routes.realtime import router as realtime_router
+from app.routes.github_auth import router as github_auth_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -86,6 +87,7 @@ app.include_router(media_router)
 Base.metadata.create_all(bind=engine)
 
 app.include_router(auth_router)
+app.include_router(github_auth_router)
 app.include_router(projects_router)
 app.include_router(network_router)
 app.include_router(connections_router)

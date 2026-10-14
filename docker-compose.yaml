@@ -52,6 +52,10 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-DevZ-Go <onboarding@resend.dev>}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      # GitHub login (OAuth app callback: <BACKEND_URL>/auth/github/callback)
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:8000}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
       S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-${S3_ENDPOINT_URL:-http://localhost:9000}}

@@ -54,7 +54,7 @@ def login(
 ):
     user = db.query(User).filter(func.lower(User.email) == form_data.username.strip().lower()).first()
 
-    if not user or not verify_password(form_data.password, user.password_hash):
+    if not user or not user.password_hash or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     access_token = create_access_token(data={"sub": str(user.id)})
