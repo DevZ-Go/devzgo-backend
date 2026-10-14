@@ -42,10 +42,10 @@ services:
       - s3-init
     ports:
       - "8000:8000"
-    # Overrides come from your shell or a .env file next to this compose file; defaults are for local dev.
-    # DOCKER_DATABASE_URL (not DATABASE_URL) so a localhost URL in .env never leaks into the container.
+    # Overrides come from your shell or the .env file next to this compose file; defaults are for local dev.
+    # DATABASE_URL unset -> the local db container. Set it in .env (e.g. Neon) to use that database instead.
     environment:
-      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://devzgo:devzgo@db:5432/devzgo_db}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://devzgo:devzgo@db:5432/devzgo_db}
       SECRET_KEY: "supersecretkey"
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
