@@ -99,6 +99,13 @@ class ProjectResponse(BaseModel):
     languages: List[LanguageStat] = []
     detected_tech_stacks: List[str] = []
     detected_tech_stack_ids: List[int] = []
+    likes_count: int = 0
+    is_liked: bool = False
 
     class Config:
         from_attributes = True
+
+class ProjectLikeResponse(BaseModel):
+    project_id: UUID
+    likes_count: int
+    is_liked: bool

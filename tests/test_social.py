@@ -94,3 +94,22 @@ def test_conversations_and_pagination(client, make_user):
     assert [m["content"] for m in thread] == ["m1", "m2"]
     older = client.get(f"/messages/conversations/{a_id}", headers=b, params={"before": thread[0]["created_at"]}).json()
     assert [m["content"] for m in older] == ["m0"]
+
+
+def test_project_likes(client, make_user):
+    owner, _ = make_user()
+    fan, _ = make_user()
+    public_id = _project(client, owner)
+    private_id = _project(client, owner, "Private")
+
+    assert client.post(f"/projects/{private_id}/like", headers=fan).status_code == 404
+    for _ in range(2):  # liking twice stays at one like
+        body = client.post(f"/projects/{public_id}/like", headers=fan).json()
+        assert body == {"project_id": public_id, "likes_count": 1, "is_liked": True}
+    detail = client.get(f"/projects/{public_id}", headers=fan).json()
+    assert detail["likes_count"] == 1 and detail["is_liked"] is True
+    listed = {p["id"]: p for p in client.get("/projects", headers=fan).json()}
+    assert listed[public_id]["likes_count"] == 1
+    assert len([n for n in client.get("/notifications", headers=owner).json() if n["type"] == "project_like"]) == 1
+    assert client.delete(f"/projects/{public_id}/like", headers=fan).json()["likes_count"] == 0
+    assert client.delete(f"/projects/{public_id}", headers=owner).status_code == 204
