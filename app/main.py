@@ -8,12 +8,14 @@ behind permissioned /projects/{id}/file routes.
 """
 
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 # Importing CORSMiddleware to handle Cross-Origin Resource Sharing, allowing the frontend to communicate with the backend
@@ -32,6 +34,7 @@ from app.routes.notifications import router as notifications_router
 from app.routes.profiles import router as profiles_router
 from app.routes.analytics import router as analytics_router
 from app.routes.media import router as media_router
+from app.services import storage
 
 app = FastAPI(
     title="DevZGo API",
@@ -66,14 +69,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Public media only. Do not mount storage/project_<uuid>/ (private workspaces).
-storage_root = Path("storage")
-covers_dir = storage_root / "covers"
-videos_dir = storage_root / "videos"
-covers_dir.mkdir(parents=True, exist_ok=True)
-videos_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/storage/covers", StaticFiles(directory=str(covers_dir)), name="storage_covers")
-app.mount("/storage/videos", StaticFiles(directory=str(videos_dir)), name="storage_videos")
+# Public media only. Do not expose storage/project_<uuid>/ (private workspaces).
+if storage.is_s3():
+    @app.get("/storage/{kind}/{name}", include_in_schema=False)
+    def media_redirect(kind: Literal["covers", "videos"], name: str):
+        return RedirectResponse(storage.url(f"{kind}/{name}"))
+else:
+    for kind in ("covers", "videos"):
+        (storage.ROOT / kind).mkdir(parents=True, exist_ok=True)
+        app.mount(f"/storage/{kind}", StaticFiles(directory=str(storage.ROOT / kind)), name=f"storage_{kind}")
 app.include_router(media_router)
 
 # Create the database tables based on the models defined in the Base metadata.

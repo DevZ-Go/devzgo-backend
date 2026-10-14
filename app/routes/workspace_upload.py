@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.models.file import File as FileRecord
 from app.models.project import Project
 from app.models.user import User
+from app.services import storage
 from app.services.project_analysis import (
     analyze_workspace,
     resolve_tech_stacks_from_names,
@@ -176,7 +177,10 @@ def perform_workspace_zip_upload(
     if project.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    workspace_root = workspace_dir_for_project(project_id)
+    in_bucket = storage.is_s3()
+    workspace_root = (
+        Path(tempfile.mkdtemp(prefix="workspace_")) / "w" if in_bucket else workspace_dir_for_project(project_id)
+    )
     tmp_zip: Path | None = None
 
     try:
@@ -200,6 +204,12 @@ def perform_workspace_zip_upload(
 
         analysis = apply_analysis_to_project(db, project, workspace_root)
 
+        if in_bucket:
+            storage.delete_prefix(f"project_{project_id}/")
+            storage.upload_dir(workspace_root, f"project_{project_id}")
+            with open(tmp_zip, "rb") as original:
+                storage.save(f"sources/{project_id}.zip", original)
+
         db.commit()
 
         return {
@@ -220,6 +230,8 @@ def perform_workspace_zip_upload(
         file.file.close()
         if tmp_zip is not None and tmp_zip.exists():
             tmp_zip.unlink(missing_ok=True)
+        if in_bucket:
+            shutil.rmtree(workspace_root.parent, ignore_errors=True)
 
 
 __all__ = [

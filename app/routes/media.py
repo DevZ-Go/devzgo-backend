@@ -1,23 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from uuid import UUID
-from pathlib import Path
-import shutil
 import uuid
 
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.user import User
 from app.core.dependencies import get_current_user
+from app.services import storage
 
 router = APIRouter(prefix="/projects", tags=["Project Media"])
 
-BASE_STORAGE = Path("storage")
-COVER_DIR = BASE_STORAGE / "covers"
-VIDEO_DIR = BASE_STORAGE / "videos"
-
-COVER_DIR.mkdir(parents=True, exist_ok=True)
-VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @router.post("/{project_id}/media")
@@ -39,21 +32,13 @@ def upload_project_media(
     if cover_image:
         cover_ext = cover_image.filename.split(".")[-1]
         cover_name = f"{project_id}_{uuid.uuid4()}.{cover_ext}"
-        cover_path = COVER_DIR / cover_name
-
-        with open(cover_path, "wb") as buffer:
-            shutil.copyfileobj(cover_image.file, buffer)
-
+        storage.save(f"covers/{cover_name}", cover_image.file)
         project.cover_image_url = f"/storage/covers/{cover_name}"
 
     if demo_video:
         video_ext = demo_video.filename.split(".")[-1]
         video_name = f"{project_id}_{uuid.uuid4()}.{video_ext}"
-        video_path = VIDEO_DIR / video_name
-
-        with open(video_path, "wb") as buffer:
-            shutil.copyfileobj(demo_video.file, buffer)
-
+        storage.save(f"videos/{video_name}", demo_video.file)
         project.demo_video_url = f"/storage/videos/{video_name}"
 
     db.commit()

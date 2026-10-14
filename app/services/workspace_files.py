@@ -9,7 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-STORAGE_ROOT = Path("storage")
+from app.services import storage
+
+STORAGE_ROOT = storage.ROOT
 
 # Extensions treated as binary (never decode as UTF-8 text).
 BINARY_EXTENSIONS = frozenset(
@@ -152,6 +154,13 @@ def resolve_workspace_file(project_id: UUID, relative: str) -> Path:
     except ValueError as exc:
         raise ValueError("Invalid file path") from exc
     return resolved
+
+
+def read_workspace_file(project_id: UUID, relative: str) -> bytes:
+    """Bytes of a workspace file from disk or bucket; same errors as resolve_workspace_file."""
+    if storage.is_s3():
+        return storage.read(f"project_{project_id}/{relative}")
+    return resolve_workspace_file(project_id, relative).read_bytes()
 
 
 def extension_of(path: str) -> str:

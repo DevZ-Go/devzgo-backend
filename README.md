@@ -29,8 +29,21 @@ Source files are not publicly mounted. Read them with:
 
 Covers and videos remain at `/storage/covers` and `/storage/videos`.
 
+## File storage
+
+`STORAGE_BACKEND=local` (default) keeps files in `storage/`. `STORAGE_BACKEND=s3` uses any S3-compatible bucket: the RustFS container in docker compose, Cloudflare R2, Backblaze B2 or AWS S3. Keys mirror the folder layout (`covers/`, `videos/`, `project_<id>/`, plus `sources/<id>.zip` for the original upload). Media URLs stay `/storage/...` and redirect to short-lived signed links.
+
+```bash
+STORAGE_BACKEND=s3 docker compose up -d --build                      # use the local bucket
+docker compose exec backend python -m app.scripts.migrate_storage_to_s3   # copy existing storage/ files in
+```
+
+Bucket console: http://localhost:9001 (devzgo / devzgo-secret). For a cloud bucket, set `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` in `.env` (see `.env.example`).
+
 ## Tests
 
 ```bash
 PYTHONPATH=. pytest tests/ -q
+# also against the compose bucket:
+TEST_S3_ENDPOINT_URL=http://localhost:9000 S3_ACCESS_KEY_ID=devzgo S3_SECRET_ACCESS_KEY=devzgo-secret S3_REGION=us-east-1 PYTHONPATH=. pytest tests/ -q
 ```
