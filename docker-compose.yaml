@@ -48,6 +48,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://devzgo:devzgo@db:5432/devzgo_db}
       # Set a long random SECRET_KEY in .env; the fallback is for local dev only.
       SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret}
+      # Email (forgot password). Without RESEND_API_KEY the reset link is written to the backend log.
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-DevZ-Go <onboarding@resend.dev>}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
       S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-${S3_ENDPOINT_URL:-http://localhost:9000}}
