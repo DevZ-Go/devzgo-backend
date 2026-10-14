@@ -59,6 +59,28 @@ def _ensure_analysis_columns() -> None:
             print(f"[bootstrap] Applied: {stmt}")
 
 
+_INDEXES = {
+    "ix_activities_user": "network_activities (user_id)",
+    "ix_activities_project": "network_activities (project_id)",
+    "ix_activities_created": "network_activities (created_at DESC)",
+    "ix_activity_likes_user": "activity_likes (user_id)",
+    "ix_activity_comments_activity": "activity_comments (activity_id)",
+    "ix_connections_receiver": "connections (receiver_id)",
+    "ix_messages_pair_created": "messages (sender_id, receiver_id, created_at)",
+    "ix_messages_receiver_unread": "messages (receiver_id) WHERE read = false",
+    "ix_notifications_recipient_created": "notifications (recipient_id, created_at DESC)",
+    "ix_collab_requests_project": "collaboration_requests (project_id)",
+    "ix_project_collaborators_user": "project_collaborators (user_id)",
+}
+
+
+def _ensure_indexes() -> None:
+    """Add-only: create social indexes that are missing (safe to run on every start)."""
+    with engine.begin() as conn:
+        for name, target in _INDEXES.items():
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {target}"))
+
+
 def _stamp_alembic_head() -> None:
     """Mark Alembic at head without failing on incomplete history."""
     try:
@@ -77,6 +99,8 @@ def bootstrap() -> None:
     Base.metadata.create_all(bind=engine)
     print("[bootstrap] Ensuring analysis columns...")
     _ensure_analysis_columns()
+    print("[bootstrap] Ensuring indexes...")
+    _ensure_indexes()
     print("[bootstrap] Stamping Alembic head (best-effort)...")
     _stamp_alembic_head()
     print("[bootstrap] Seeding tech stacks...")

@@ -91,7 +91,8 @@ def create_project(
         db.add(activity)
         db.commit()
     except Exception:
-        pass
+        # The feed entry is optional; never fail project creation because of it.
+        db.rollback()
 
     return build_project_response(
         new_project, current_user.username, viewer_user_id=current_user.id

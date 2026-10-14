@@ -1,7 +1,21 @@
 from uuid import UUID
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from pydantic import AfterValidator, BaseModel, Field
+from typing import Annotated, List, Literal, Optional
 from datetime import datetime
+
+
+def _link(value: Optional[str]) -> Optional[str]:
+    """Empty clears the field; otherwise only http(s) links or our own /storage/ paths."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    if not value.startswith(("http://", "https://", "/storage/")):
+        raise ValueError("must be an http(s) link")
+    return value
+
+
+Link = Annotated[Optional[str], Field(default=None, max_length=500), AfterValidator(_link)]
+ShortText = Annotated[Optional[str], Field(default=None, max_length=255)]
 
 # ==================== PROFILES ====================
 class UserProfileBase(BaseModel):
@@ -16,13 +30,21 @@ class UserProfileBase(BaseModel):
     location: Optional[str] = None
 
 class UserProfileUpdate(UserProfileBase):
-    pass
+    full_name: ShortText = None
+    headline: ShortText = None
+    bio: Optional[str] = Field(default=None, max_length=2000)
+    avatar_url: Link = None
+    github_url: Link = None
+    linkedin_url: Link = None
+    website_url: Link = None
+    skills: Optional[str] = Field(default=None, max_length=1000)
+    location: ShortText = None
 
 class UserProfileResponse(UserProfileBase):
     id: UUID
     user_id: UUID
     username: str
-    email: str
+    email: Optional[str] = None  # only filled in on /profiles/me
     created_at: datetime
     projects_count: int = 0
     connections_count: int = 0
@@ -34,7 +56,7 @@ class UserProfileResponse(UserProfileBase):
 
 # ==================== LIKES & COMMENTS ====================
 class ActivityCommentCreate(BaseModel):
-    comment_text: str
+    comment_text: str = Field(min_length=1, max_length=2000)
 
 class ActivityCommentResponse(BaseModel):
     id: UUID
@@ -56,11 +78,11 @@ class ActivityLikeResponse(BaseModel):
 
 # ==================== FEED / NETWORK ACTIVITIES ====================
 class FeedPostCreate(BaseModel):
-    title: Optional[str] = None
-    content: str
-    activity_type: str = "post"
+    title: ShortText = None
+    content: str = Field(min_length=1, max_length=5000)
+    activity_type: Literal["post", "project_update"] = "post"
     project_id: Optional[UUID] = None
-    media_url: Optional[str] = None
+    media_url: Link = None
 
 class ProjectPreview(BaseModel):
     id: UUID
@@ -131,7 +153,7 @@ class ConnectionStatusResponse(BaseModel):
 # ==================== MESSAGES ====================
 class MessageCreate(BaseModel):
     receiver_id: UUID
-    content: str
+    content: str = Field(min_length=1, max_length=5000)
 
 class MessageResponse(BaseModel):
     id: UUID
@@ -152,8 +174,8 @@ class ConversationResponse(BaseModel):
 
 # ==================== COLLABORATIONS ====================
 class CollaborationRequestCreate(BaseModel):
-    message: Optional[str] = None
-    role: str = "Collaborator"
+    message: Optional[str] = Field(default=None, max_length=2000)
+    role: str = Field(default="Collaborator", min_length=1, max_length=100)
 
 class CollaborationRequestResponse(BaseModel):
     id: UUID

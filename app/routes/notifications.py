@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from datetime import datetime
+
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import desc
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from app.db.session import get_db
@@ -9,11 +11,12 @@ from app.models.user import User
 from app.models.notification import Notification
 from app.core.dependencies import get_current_user
 from app.schemas.network import NotificationResponse
+from app.services.social import display_name
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 def _format_notification(n: Notification) -> NotificationResponse:
-    actor_name = n.actor.profile.full_name if n.actor.profile and n.actor.profile.full_name else n.actor.username
+    actor_name = display_name(n.actor)
     actor_avatar = n.actor.profile.avatar_url if n.actor.profile else None
 
     return NotificationResponse(
@@ -32,13 +35,17 @@ def _format_notification(n: Notification) -> NotificationResponse:
 
 @router.get("", response_model=List[NotificationResponse])
 def get_user_notifications(
+    before: Optional[datetime] = Query(None, description="Return notifications older than this (pagination)"),
     limit: int = Query(30, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    notifs = db.query(Notification).filter(
+    query = db.query(Notification).options(selectinload(Notification.actor).selectinload(User.profile)).filter(
         Notification.recipient_id == current_user.id
-    ).order_by(desc(Notification.created_at)).limit(limit).all()
+    )
+    if before:
+        query = query.filter(Notification.created_at < before)
+    notifs = query.order_by(desc(Notification.created_at)).limit(limit).all()
 
     return [_format_notification(n) for n in notifs]
 
