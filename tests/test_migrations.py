@@ -8,7 +8,8 @@ from sqlalchemy import create_engine, text
 TEST_DB = os.getenv("TEST_DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
 
-LEGACY_INDEXES = ["ix_activities_created", "ix_messages_receiver_unread", "ix_notifications_recipient_created", "uq_users_github_id"]
+LEGACY_INDEXES = ["ix_activities_created", "ix_messages_receiver_unread", "ix_notifications_recipient_created",
+                  "uq_users_github_id", "uq_users_username_lower"]
 
 
 @pytest.fixture
@@ -66,8 +67,20 @@ def test_legacy_create_all_database_upgrades_cleanly(migr_engine):
             conn.execute(text(f"DROP INDEX IF EXISTS {name}"))
         conn.execute(text("ALTER TABLE users ADD CONSTRAINT users_github_id_key UNIQUE (github_id)"))
         conn.execute(text("ALTER TABLE projects DROP COLUMN language_stats"))
+        conn.execute(text("ALTER TABLE users DROP COLUMN token_version"))
         conn.execute(text("INSERT INTO users (id, username, email) VALUES (gen_random_uuid(), 'keep', 'keep@example.com')"))
     _run(migr_engine, "upgrade", "head")
     assert _diff(migr_engine) == []
     with migr_engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM users")).scalar() == 1  # data survives
+
+
+def test_identity_migration_stops_on_case_duplicate_usernames(migr_engine):
+    _run(migr_engine, "upgrade", "003_baseline")
+    with migr_engine.begin() as conn:
+        conn.execute(text("INSERT INTO users (id, username, email) VALUES "
+                          "(gen_random_uuid(), 'Sam', 'a@example.com'), (gen_random_uuid(), 'sam', 'b@example.com')"))
+    with pytest.raises(RuntimeError, match="sam: "):
+        _run(migr_engine, "upgrade", "head")
+    with migr_engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM users")).scalar() == 2
