@@ -24,7 +24,7 @@ def test_comment_rules_and_counts(client, make_user):
     assert client.get(f"/projects/{pid}", headers=other).json()["comments_count"] == 1
     listed = {p["id"]: p for p in client.get("/projects", headers=other).json()}
     assert listed[pid]["comments_count"] == 1
-    feed_project = next(a["project"] for a in client.get("/network/feed", headers=fan).json()
+    feed_project = next(a["project"] for a in client.get("/network/feed?limit=50", headers=fan).json()["items"]
                         if a["project"] and a["project"]["id"] == pid)
     assert feed_project["comments_count"] == 1
 

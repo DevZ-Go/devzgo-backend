@@ -82,9 +82,14 @@ class ActivityCommentResponse(BaseModel):
     author_avatar: Optional[str] = None
     comment_text: str
     created_at: datetime
+    can_delete: bool = False  # the comment's author or the post's author
 
     class Config:
         from_attributes = True
+
+class ActivityCommentPage(BaseModel):
+    items: List[ActivityCommentResponse]
+    next_page: Optional[str] = None
 
 class ActivityLikeResponse(BaseModel):
     activity_id: UUID
@@ -95,9 +100,13 @@ class ActivityLikeResponse(BaseModel):
 class FeedPostCreate(BaseModel):
     title: ShortText = None
     content: str = Field(min_length=1, max_length=5000)
-    activity_type: Literal["post", "project_update"] = "post"
+    activity_type: Literal["post", "milestone", "collab_call", "project_update"] = "post"
     project_id: Optional[UUID] = None
     media_url: Link = None
+
+class FeedPostUpdate(BaseModel):
+    title: ShortText = None
+    content: Optional[str] = Field(default=None, min_length=1, max_length=5000)
 
 class ProjectPreview(BaseModel):
     id: UUID
@@ -135,10 +144,15 @@ class FeedActivityResponse(BaseModel):
     likes_count: int = 0
     is_liked: bool = False
     comments_count: int = 0
-    comments: List[ActivityCommentResponse] = []
+    comments: List[ActivityCommentResponse] = []  # the latest two, oldest first; the rest via /comments
+    can_edit: bool = False  # author of a user post (system events cannot be edited)
 
     class Config:
         from_attributes = True
+
+class FeedPage(BaseModel):
+    items: List[FeedActivityResponse]
+    next_page: Optional[str] = None
 
 # ==================== CONNECTIONS ====================
 class ConnectionRequestCreate(BaseModel):

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.errors import Conflict
+from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.collaboration import PERMISSIONS, CollaborationRequest, ProjectCollaborator, ProjectInvitation
 from app.models.network import NetworkActivity
@@ -152,7 +153,7 @@ def get_project_collaboration_requests(project_id: UUID, db: Session = Depends(g
     return [_request_view(r) for r in rows]
 
 
-@router.post("/projects/{project_id}/requests", response_model=CollaborationRequestResponse)
+@router.post("/projects/{project_id}/requests", response_model=CollaborationRequestResponse, dependencies=[rate_limit("collab", 20, 60)])
 def submit_collaboration_request(project_id: UUID, data: CollaborationRequestCreate, db: Session = Depends(get_db),
                                  me: User = Depends(get_current_user)):
     project = _project(db, project_id, me)
@@ -243,7 +244,7 @@ def search_invitees(project_id: UUID, q: str = Query(..., min_length=1, max_leng
     return [InviteeResult(**user_summary(u).model_dump(), status=status(u.id)) for u in users]
 
 
-@router.post("/projects/{project_id}/invitations", response_model=InvitationResponse)
+@router.post("/projects/{project_id}/invitations", response_model=InvitationResponse, dependencies=[rate_limit("collab", 20, 60)])
 def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     project = _project(db, project_id, me, owner_only=True)
     invitee = db.query(User).filter(func.lower(User.username) == data.username.strip().lower()).first()

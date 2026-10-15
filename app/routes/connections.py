@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.core.dependencies import get_current_user
 from app.core.errors import Conflict
+from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.connection import Connection
 from app.models.profile import UserProfile
@@ -57,7 +58,7 @@ def _view(c: Connection, me: UUID, mutual: int = 0) -> ConnectionResponse:
                               partner=user_summary(partner), mutual_count=mutual)
 
 
-def _partner_ids(db: Session, me: UUID) -> set:
+def partner_ids(db: Session, me: UUID) -> set:
     rows = db.query(Connection.requester_id, Connection.receiver_id).filter(_mine(me), Connection.status == "accepted").all()
     return {b if a == me else a for a, b in rows}
 
@@ -75,7 +76,7 @@ def my_connections(search: Optional[str] = Query(None, max_length=100), page: Op
         query = query.filter(or_(and_(Connection.requester_id == me.id, Connection.receiver_id.in_(matching)),
                                  and_(Connection.receiver_id == me.id, Connection.requester_id.in_(matching))))
     rows, next_page = paginate(query, Connection, page, limit)
-    mine = _partner_ids(db, me.id)
+    mine = partner_ids(db, me.id)
     partners = [c.receiver_id if c.requester_id == me.id else c.requester_id for c in rows]
     mutual = Counter()
     for a, b in db.query(Connection.requester_id, Connection.receiver_id).filter(
@@ -126,7 +127,7 @@ def get_connection_status(user_id: UUID, db: Session = Depends(get_db), me: User
     return ConnectionStatusResponse(user_id=user_id, status=status, connection_id=connection_id)
 
 
-@router.post("/request", response_model=ConnectionResponse)
+@router.post("/request", response_model=ConnectionResponse, dependencies=[rate_limit("connect", 20, 60)])
 def send_connection_request(data: ConnectionRequestCreate, db: Session = Depends(get_db),
                             me: User = Depends(get_current_user)):
     if data.target_user_id == me.id:
@@ -207,7 +208,7 @@ def get_suggested_developers(limit: int = Query(5, ge=1, le=20), db: Session = D
     """People I have no connection row with (so declined users stay out), most mutual connections first."""
     rows = db.query(Connection.requester_id, Connection.receiver_id).filter(_mine(me.id)).all()
     excluded = {b if a == me.id else a for a, b in rows} | {me.id}
-    partners = _partner_ids(db, me.id)
+    partners = partner_ids(db, me.id)
     mutual = Counter()
     for a, b in db.query(Connection.requester_id, Connection.receiver_id).filter(
             Connection.status == "accepted", or_(Connection.requester_id.in_(partners), Connection.receiver_id.in_(partners))).all():

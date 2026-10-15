@@ -10,13 +10,13 @@ def _project(client, headers, visibility="Public"):
 
 
 def test_private_projects_hidden_from_feed_and_collaborators(client, make_user):
-    owner, _ = make_user()
+    owner, owner_id = make_user()
     other, _ = make_user()
     private_id = _project(client, owner, "Private")
     public_id = _project(client, owner, "Public")
 
     def feed_ids(headers=None):
-        return {a["project"]["id"] for a in client.get("/network/feed", headers=headers).json() if a["project"]}
+        return {a["project"]["id"] for a in client.get(f"/network/feed?user_id={owner_id}", headers=headers).json()["items"] if a["project"]}
 
     assert private_id not in feed_ids(other) and private_id not in feed_ids()
     assert public_id in feed_ids(other)

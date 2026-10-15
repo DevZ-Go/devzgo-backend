@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.dependencies import get_current_user, get_current_user_optional
+from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.project_comment import ProjectComment
@@ -41,7 +42,8 @@ def list_comments(project_id: UUID, page: Optional[str] = None, limit: int = Que
     return {"items": [_response(c, project, viewer) for c in rows], "next_page": next_page}
 
 
-@router.post("", response_model=ProjectCommentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ProjectCommentResponse, status_code=status.HTTP_201_CREATED,
+             dependencies=[rate_limit("comment", 20, 60)])
 def add_comment(project_id: UUID, data: ProjectCommentCreate, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
     project = _visible_project(db, project_id, user)
