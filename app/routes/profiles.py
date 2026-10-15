@@ -53,6 +53,7 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
         user_id=user.id,
         username=user.username,
         email=user.email if viewer_id == user.id else None,
+        timezone=profile.timezone if profile and viewer_id == user.id else None,
         full_name=full_name,
         headline=headline,
         bio=bio,
@@ -90,6 +91,8 @@ def update_my_profile(
 
     # Only fields sent by the client change; sending "" or null clears a field.
     for field, value in profile_data.model_dump(exclude_unset=True).items():
+        if field == "timezone" and not value:
+            continue  # always set; clearing it is not allowed
         setattr(profile, field, value.strip() or None if isinstance(value, str) else value)
 
     db.commit()

@@ -2,6 +2,7 @@ from uuid import UUID
 from pydantic import AfterValidator, BaseModel, Field
 from typing import Annotated, List, Literal, Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def _link(value: Optional[str]) -> Optional[str]:
@@ -15,6 +16,17 @@ def _link(value: Optional[str]) -> Optional[str]:
 
 
 Link = Annotated[Optional[str], Field(default=None, max_length=500), AfterValidator(_link)]
+
+
+def _timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("Unknown timezone")
+    return value
+
+
+TimeZone = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(_timezone)]
 ShortText = Annotated[Optional[str], Field(default=None, max_length=255)]
 
 # ==================== PROFILES ====================
@@ -39,12 +51,14 @@ class UserProfileUpdate(UserProfileBase):
     website_url: Link = None
     skills: Optional[str] = Field(default=None, max_length=1000)
     location: ShortText = None
+    timezone: Optional[TimeZone] = None
 
 class UserProfileResponse(UserProfileBase):
     id: UUID
     user_id: UUID
     username: str
     email: Optional[str] = None  # only filled in on /profiles/me
+    timezone: Optional[str] = None  # only filled in on /profiles/me
     created_at: datetime
     projects_count: int = 0
     connections_count: int = 0

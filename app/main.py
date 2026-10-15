@@ -7,6 +7,8 @@ Storage note: only covers and videos are publicly mounted. Project workspaces st
 behind permissioned /projects/{id}/file routes.
 """
 
+import asyncio
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -22,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 # Importing the database base and engine to ensure that the database tables are created when the application starts
-from app.core.errors import Conflict, conflict_handler
+from app.core.errors import ApiError, api_error_handler
 from app.db.base import Base
 from app.db.session import engine
 from app.routes.auth import router as auth_router
@@ -38,6 +40,7 @@ from app.routes.analytics import router as analytics_router
 from app.routes.media import router as media_router
 from app.routes.realtime import router as realtime_router
 from app.routes.github_auth import router as github_auth_router
+from app.routes.wraps import router as wraps_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -88,7 +91,7 @@ app.include_router(media_router)
 # Create the database tables based on the models defined in the Base metadata.
 Base.metadata.create_all(bind=engine)
 
-app.add_exception_handler(Conflict, conflict_handler)
+app.add_exception_handler(ApiError, api_error_handler)
 app.include_router(auth_router)
 app.include_router(github_auth_router)
 app.include_router(projects_router)
@@ -101,11 +104,33 @@ app.include_router(notifications_router)
 app.include_router(profiles_router)
 app.include_router(analytics_router)
 app.include_router(realtime_router)
+app.include_router(wraps_router)
 
 
 @app.on_event("startup")
 async def start_realtime():
     await broadcaster.start()
+    if os.getenv("WRAP_JOB", "on").lower() != "off":
+        asyncio.create_task(_store_finished_wraps())
+
+
+async def _store_finished_wraps():
+    """Every few hours, store wraps for users whose month just ended in their timezone. Idempotent, so several instances are fine."""
+    from app.db.session import SessionLocal
+    from app.scripts.generate_wraps import generate
+
+    def run():
+        with SessionLocal() as db:
+            return generate(db)
+
+    while True:
+        try:
+            stored = await asyncio.to_thread(run)
+            if stored:
+                print(f"[wraps] stored {stored} monthly wrap(s)")
+        except Exception as exc:
+            print(f"[wraps] job failed: {type(exc).__name__}")
+        await asyncio.sleep(6 * 3600)
 
 static_dir = Path(__file__).resolve().parent / "static"
 static_dir.mkdir(parents=True, exist_ok=True)

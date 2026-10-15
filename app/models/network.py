@@ -5,6 +5,8 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
 
+USER_POST_TYPES = ("post", "milestone", "collab_call", "project_update")  # written by people; the rest are system events
+
 class NetworkActivity(Base):
     __tablename__ = "network_activities"
 

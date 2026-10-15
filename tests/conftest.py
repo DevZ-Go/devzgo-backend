@@ -19,6 +19,7 @@ if TEST_DB:
     os.environ["DATABASE_URL"] = TEST_DB
     os.environ["STORAGE_BACKEND"] = "local"
     os.environ.setdefault("SECRET_KEY", "test-secret")
+    os.environ["WRAP_JOB"] = "off"  # tests call the generator directly
 
 
 @pytest.fixture(scope="session")
