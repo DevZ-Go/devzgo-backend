@@ -12,3 +12,4 @@ from app.models.connection import Connection
 from app.models.message import Message
 from app.models.collaboration import CollaborationRequest, ProjectCollaborator
 from app.models.notification import Notification
+from app.models.project_like import ProjectLike

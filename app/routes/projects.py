@@ -4,6 +4,8 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, Response
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -18,10 +20,13 @@ from app.schemas.project import (
     ProjectCreate,
     ProjectFileContentResponse,
     ProjectFileEntry,
+    ProjectLikeResponse,
     ProjectResponse,
 )
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.user import User
+from app.models.project_like import ProjectLike
+from app.services.social import can_view_project, display_name, notify
 from app.routes.workspace_upload import perform_workspace_zip_upload
 from app.services import storage
 from app.services.project_storage import delete_all_project_storage
@@ -193,12 +198,15 @@ def list_public_projects(
     projects = query.all()
 
     vid = current_user.id if current_user else None
+    counts, liked = like_stats(db, [p.id for p in projects], vid)
 
     return [
         build_project_response(
             p,
             p.owner.username,
             viewer_user_id=vid,
+            likes_count=counts.get(p.id, 0),
+            is_liked=p.id in liked,
         )
         for p in projects
     ]
@@ -213,9 +221,13 @@ def list_my_projects(
     projects = db.query(Project).filter(
         Project.owner_id == current_user.id
     ).all()
+    counts, liked = like_stats(db, [p.id for p in projects], current_user.id)
 
     return [
-        build_project_response(p, current_user.username, viewer_user_id=current_user.id)
+        build_project_response(
+            p, current_user.username, viewer_user_id=current_user.id,
+            likes_count=counts.get(p.id, 0), is_liked=p.id in liked,
+        )
         for p in projects
     ]
 
@@ -503,9 +515,55 @@ def get_project(
             raise HTTPException(status_code=403, detail="Private project")
 
     vid = current_user.id if current_user else None
+    counts, liked = like_stats(db, [project.id], vid)
     return build_project_response(
-        project, project.owner.username, viewer_user_id=vid
+        project, project.owner.username, viewer_user_id=vid,
+        likes_count=counts.get(project.id, 0), is_liked=project.id in liked,
     )
+
+
+# ---------------- PROJECT LIKES ----------------
+def _like_response(db: Session, project_id: UUID, is_liked: bool) -> ProjectLikeResponse:
+    count = db.query(ProjectLike).filter(ProjectLike.project_id == project_id).count()
+    return ProjectLikeResponse(project_id=project_id, likes_count=count, is_liked=is_liked)
+
+
+def _likeable_project(db: Session, project_id: UUID, user: User) -> Project:
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project or not can_view_project(db, project, user.id):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@router.post("/{project_id}/like", response_model=ProjectLikeResponse)
+def like_project(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = _likeable_project(db, project_id, current_user)
+    if not db.query(ProjectLike.id).filter_by(project_id=project_id, user_id=current_user.id).first():
+        try:
+            db.add(ProjectLike(project_id=project_id, user_id=current_user.id))
+            notify(db, project.owner_id, current_user, "project_like", str(project_id),
+                   f"{display_name(current_user)} liked your project \"{project.title}\".", once=True)
+            db.commit()
+        except IntegrityError:
+            # A parallel request already stored this like.
+            db.rollback()
+    return _like_response(db, project_id, True)
+
+
+@router.delete("/{project_id}/like", response_model=ProjectLikeResponse)
+def unlike_project(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _likeable_project(db, project_id, current_user)
+    db.query(ProjectLike).filter_by(project_id=project_id, user_id=current_user.id).delete()
+    db.commit()
+    return _like_response(db, project_id, False)
 
 
 # ---------------- UPDATE PROJECT ----------------
@@ -628,11 +686,28 @@ def _detected_names_for_project(project: Project) -> tuple[list[str], list[int]]
     return names, [i for i in ids if i in by_id]
 
 
+def like_stats(db: Session, project_ids: List[UUID], viewer_id: Optional[UUID]):
+    """Like counts per project and the set the viewer liked, in two grouped queries."""
+    if not project_ids:
+        return {}, set()
+    counts = dict(
+        db.query(ProjectLike.project_id, func.count()).filter(ProjectLike.project_id.in_(project_ids))
+        .group_by(ProjectLike.project_id).all()
+    )
+    liked = {
+        r[0] for r in db.query(ProjectLike.project_id)
+        .filter(ProjectLike.project_id.in_(project_ids), ProjectLike.user_id == viewer_id).all()
+    } if viewer_id else set()
+    return counts, liked
+
+
 def build_project_response(
     project: Project,
     owner_username: str,
     *,
     viewer_user_id: Optional[UUID] = None,
+    likes_count: int = 0,
+    is_liked: bool = False,
 ):
     is_owner = (
         viewer_user_id is not None and project.owner_id == viewer_user_id
@@ -660,4 +735,6 @@ def build_project_response(
         languages=languages,
         detected_tech_stacks=detected_names,
         detected_tech_stack_ids=detected_ids,
+        likes_count=likes_count,
+        is_liked=is_liked,
     )

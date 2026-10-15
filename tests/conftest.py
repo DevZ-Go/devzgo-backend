@@ -16,6 +16,7 @@ if TEST_DB:
     if not TEST_DB.rsplit("/", 1)[-1].split("?")[0].endswith("_test"):
         raise RuntimeError("TEST_DATABASE_URL must point at a database whose name ends in _test")
     os.environ["DATABASE_URL"] = TEST_DB
+    os.environ["STORAGE_BACKEND"] = "local"
     os.environ.setdefault("SECRET_KEY", "test-secret")
 
 
