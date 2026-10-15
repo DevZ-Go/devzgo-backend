@@ -95,6 +95,9 @@ class ProjectPreview(BaseModel):
     complexity: Optional[str] = None
     contribution_info: Optional[str] = None
     owner_username: Optional[str] = None
+    likes_count: int = 0
+    is_liked: bool = False
+    comments_count: int = 0
 
     class Config:
         from_attributes = True

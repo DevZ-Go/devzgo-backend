@@ -26,6 +26,7 @@ from app.db.base import Base
 from app.db.session import engine
 from app.routes.auth import router as auth_router
 from app.routes.projects import router as projects_router
+from app.routes.project_comments import router as project_comments_router
 from app.routes.network import router as network_router
 from app.routes.connections import router as connections_router
 from app.routes.messages import router as messages_router
@@ -89,6 +90,7 @@ Base.metadata.create_all(bind=engine)
 app.include_router(auth_router)
 app.include_router(github_auth_router)
 app.include_router(projects_router)
+app.include_router(project_comments_router)
 app.include_router(network_router)
 app.include_router(connections_router)
 app.include_router(messages_router)

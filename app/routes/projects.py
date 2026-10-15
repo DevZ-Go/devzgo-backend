@@ -26,7 +26,7 @@ from app.schemas.project import (
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.project_like import ProjectLike
-from app.services.social import can_view_project, display_name, notify
+from app.services.social import can_view_project, display_name, notify, project_stats
 from app.routes.workspace_upload import perform_workspace_zip_upload
 from app.services import storage
 from app.services.project_storage import delete_all_project_storage
@@ -71,6 +71,7 @@ def create_project(
         category_other=cat_other,
         visibility=project_data.visibility,
         cover_image_url=project_data.cover_image_url,
+        comments_enabled=project_data.comments_enabled is not False,
     )
 
     new_project.tech_stacks = tech_stacks
@@ -198,18 +199,8 @@ def list_public_projects(
     projects = query.all()
 
     vid = current_user.id if current_user else None
-    counts, liked = like_stats(db, [p.id for p in projects], vid)
-
-    return [
-        build_project_response(
-            p,
-            p.owner.username,
-            viewer_user_id=vid,
-            likes_count=counts.get(p.id, 0),
-            is_liked=p.id in liked,
-        )
-        for p in projects
-    ]
+    stats = project_stats(db, [p.id for p in projects], vid)
+    return [build_project_response(p, p.owner.username, viewer_user_id=vid, stats=stats[p.id]) for p in projects]
 
 # ---------------- LIST MY PROJECTS ----------------
 # IMPORTANT: must come BEFORE /{project_id}
@@ -221,15 +212,9 @@ def list_my_projects(
     projects = db.query(Project).filter(
         Project.owner_id == current_user.id
     ).all()
-    counts, liked = like_stats(db, [p.id for p in projects], current_user.id)
-
-    return [
-        build_project_response(
-            p, current_user.username, viewer_user_id=current_user.id,
-            likes_count=counts.get(p.id, 0), is_liked=p.id in liked,
-        )
-        for p in projects
-    ]
+    stats = project_stats(db, [p.id for p in projects], current_user.id)
+    return [build_project_response(p, current_user.username, viewer_user_id=current_user.id, stats=stats[p.id])
+            for p in projects]
 
 
 # ---------------- LIST TECH STACKS ----------------
@@ -510,16 +495,11 @@ def get_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if project.visibility == ProjectVisibility.PRIVATE:
-        if current_user is None or project.owner_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Private project")
-
     vid = current_user.id if current_user else None
-    counts, liked = like_stats(db, [project.id], vid)
-    return build_project_response(
-        project, project.owner.username, viewer_user_id=vid,
-        likes_count=counts.get(project.id, 0), is_liked=project.id in liked,
-    )
+    if not can_view_project(db, project, vid):  # private: owner and accepted collaborators only
+        raise HTTPException(status_code=403, detail="Private project")
+    return build_project_response(project, project.owner.username, viewer_user_id=vid,
+                                  stats=project_stats(db, [project.id], vid)[project.id])
 
 
 # ---------------- PROJECT LIKES ----------------
@@ -599,6 +579,8 @@ def update_project(
     project.visibility = project_update.visibility
     project.cover_image_url = project_update.cover_image_url
     project.demo_video_url = project_update.demo_video_url
+    if project_update.comments_enabled is not None:
+        project.comments_enabled = project_update.comments_enabled
 
     # Replace tech stacks on every update (including [] to clear).
     if project_update.tech_stack_ids:
@@ -614,9 +596,8 @@ def update_project(
     db.commit()
     db.refresh(project)
 
-    return build_project_response(
-        project, current_user.username, viewer_user_id=current_user.id
-    )
+    return build_project_response(project, current_user.username, viewer_user_id=current_user.id,
+                                  stats=project_stats(db, [project.id], current_user.id)[project.id])
 
 
 # ---------------- DELETE PROJECT ----------------
@@ -686,28 +667,12 @@ def _detected_names_for_project(project: Project) -> tuple[list[str], list[int]]
     return names, [i for i in ids if i in by_id]
 
 
-def like_stats(db: Session, project_ids: List[UUID], viewer_id: Optional[UUID]):
-    """Like counts per project and the set the viewer liked, in two grouped queries."""
-    if not project_ids:
-        return {}, set()
-    counts = dict(
-        db.query(ProjectLike.project_id, func.count()).filter(ProjectLike.project_id.in_(project_ids))
-        .group_by(ProjectLike.project_id).all()
-    )
-    liked = {
-        r[0] for r in db.query(ProjectLike.project_id)
-        .filter(ProjectLike.project_id.in_(project_ids), ProjectLike.user_id == viewer_id).all()
-    } if viewer_id else set()
-    return counts, liked
-
-
 def build_project_response(
     project: Project,
     owner_username: str,
     *,
     viewer_user_id: Optional[UUID] = None,
-    likes_count: int = 0,
-    is_liked: bool = False,
+    stats: Optional[dict] = None,
 ):
     is_owner = (
         viewer_user_id is not None and project.owner_id == viewer_user_id
@@ -735,6 +700,6 @@ def build_project_response(
         languages=languages,
         detected_tech_stacks=detected_names,
         detected_tech_stack_ids=detected_ids,
-        likes_count=likes_count,
-        is_liked=is_liked,
+        comments_enabled=project.comments_enabled,
+        **(stats or {}),
     )

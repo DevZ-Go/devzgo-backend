@@ -1,8 +1,9 @@
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import List, Optional
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from typing import Annotated, List, Optional
 from datetime import datetime
 from app.models.enums import ProjectCategory, ProjectVisibility
+from app.schemas.network import ConnectionUserSummary
 
 class ProjectCreate(BaseModel):
     title: str
@@ -17,6 +18,7 @@ class ProjectCreate(BaseModel):
     tech_stack_ids: List[int] = []
     cover_image_url: Optional[str] = None
     demo_video_url: Optional[str] = None
+    comments_enabled: Optional[bool] = None  # omitted on update = unchanged
 
     @field_validator("category_other", mode="before")
     @classmethod
@@ -101,6 +103,8 @@ class ProjectResponse(BaseModel):
     detected_tech_stack_ids: List[int] = []
     likes_count: int = 0
     is_liked: bool = False
+    comments_count: int = 0
+    comments_enabled: bool = True
 
     class Config:
         from_attributes = True
@@ -109,3 +113,18 @@ class ProjectLikeResponse(BaseModel):
     project_id: UUID
     likes_count: int
     is_liked: bool
+
+class ProjectCommentCreate(BaseModel):
+    body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+
+class ProjectCommentResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    body: str
+    created_at: datetime
+    author: ConnectionUserSummary
+    can_delete: bool
+
+class ProjectCommentPage(BaseModel):
+    items: List[ProjectCommentResponse]
+    next_page: Optional[str] = None

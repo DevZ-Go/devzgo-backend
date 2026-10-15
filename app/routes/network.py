@@ -14,7 +14,7 @@ from app.models.project import Project
 from app.models.network import NetworkActivity, ActivityLike, ActivityComment
 from app.models.connection import Connection
 from app.core.dependencies import get_current_user, get_current_user_optional
-from app.services.social import display_name, notify, visible_project_filter
+from app.services.social import display_name, notify, project_stats, visible_project_filter
 from app.schemas.network import (
     FeedActivityResponse,
     FeedPostCreate,
@@ -47,9 +47,10 @@ def _comment_response(c: ActivityComment) -> ActivityCommentResponse:
     )
 
 
-def _format_activity(act: NetworkActivity, likes_count: int, is_liked: bool) -> FeedActivityResponse:
+def _format_activity(act: NetworkActivity, likes_count: int, is_liked: bool, project_stats_: dict) -> FeedActivityResponse:
     p = act.project
     project_preview = ProjectPreview(
+        **project_stats_.get(p.id, {}) if p else {},
         id=p.id,
         title=p.title,
         short_description=p.short_description,
@@ -93,7 +94,8 @@ def _format_many(db: Session, acts: List[NetworkActivity], viewer_id: Optional[U
         r[0] for r in db.query(ActivityLike.activity_id)
         .filter(ActivityLike.activity_id.in_(ids), ActivityLike.user_id == viewer_id).all()
     } if ids and viewer_id else set()
-    return [_format_activity(a, counts.get(a.id, 0), a.id in liked) for a in acts]
+    stats = project_stats(db, [a.project_id for a in acts if a.project_id], viewer_id)
+    return [_format_activity(a, counts.get(a.id, 0), a.id in liked, stats) for a in acts]
 
 
 @router.get("/feed", response_model=List[FeedActivityResponse])
@@ -179,7 +181,7 @@ def create_feed_post(
     db.add(new_activity)
     db.commit()
     db.refresh(new_activity)
-    return _format_activity(new_activity, 0, False)
+    return _format_many(db, [new_activity], current_user.id)[0]
 
 
 @router.post("/activities/{activity_id}/like", response_model=ActivityLikeResponse)
