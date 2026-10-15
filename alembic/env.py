@@ -64,21 +64,23 @@ def run_migrations_online() -> None:
 
     from app.db.session import DATABASE_URL
 
+    def run(connection) -> None:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+
+    # Callers (tests) may pass their own connection; otherwise use the app's DATABASE_URL.
+    if config.attributes.get("connection") is not None:
+        run(config.attributes["connection"])
+        return
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        url=DATABASE_URL,  # <-- IMPORTANT
+        url=DATABASE_URL,
     )
-
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+        run(connection)
 
 
 if context.is_offline_mode():

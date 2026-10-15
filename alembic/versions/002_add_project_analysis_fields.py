@@ -23,6 +23,8 @@ def upgrade() -> None:
     # create_all on a fresh database already adds these columns from the model.
     # Skip them when present so upgrade is safe on both fresh and existing DBs.
     bind = op.get_bind()
+    if not inspect(bind).has_table("projects"):
+        return  # empty database: the 003 baseline creates everything
     existing = {col["name"] for col in inspect(bind).get_columns("projects")}
     if "language_stats" not in existing:
         op.add_column(
@@ -41,9 +43,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    existing = {col["name"] for col in inspect(bind).get_columns("projects")}
-    if "detected_tech_stack_ids" in existing:
-        op.drop_column("projects", "detected_tech_stack_ids")
-    if "language_stats" in existing:
-        op.drop_column("projects", "language_stats")
+    pass  # never drop data; the baseline owns these columns

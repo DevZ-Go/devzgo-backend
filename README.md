@@ -7,9 +7,19 @@ This is used for the backend of DevZ-Go
 docker compose up --build
 ```
 
-The container entrypoint waits for Postgres, runs `python -m app.scripts.bootstrap_db` (create tables, add analysis columns if missing, seed tech stacks), then starts the API on port 8000.
+The container entrypoint waits for Postgres, runs `python -m app.scripts.bootstrap_db`, then starts the API on port 8000. The bootstrap applies Alembic migrations on local databases and seeds tech stacks. On a shared database (e.g. Neon) it only warns when migrations are pending, so those are applied deliberately.
 
-Team features (auth, projects, network, feed, connections, messages, collaboration, profiles, notifications, analytics) stay registered. `Base.metadata.create_all` still runs on startup.
+## Database migrations (Alembic)
+
+The models are the source of truth; every schema change is a reviewed migration in `alembic/versions/`.
+
+```bash
+scripts/on_test_db.sh devzgo_migr_empty_test alembic upgrade head            # build from empty
+scripts/on_test_db.sh devzgo_migr_empty_test alembic revision --autogenerate -m "add x"   # draft, then review by hand
+scripts/on_test_db.sh devzgo_migr_empty_test alembic check                    # models and migrations agree
+```
+
+`scripts/on_test_db.sh` only accepts database names ending in `_test`, so it can never touch the shared database. To apply pending migrations to the shared database after review: `docker compose exec backend alembic upgrade head` (or start once with `MIGRATE_ON_START=true`).
 
 ## Workspace and analysis
 
@@ -42,8 +52,11 @@ Bucket console: http://localhost:9001 (devzgo / devzgo-secret). For a cloud buck
 
 ## Tests
 
+API and migration tests run against throwaway local databases built through the migrations:
+
 ```bash
-PYTHONPATH=. pytest tests/ -q
+scripts/on_test_db.sh devzgo_test pytest -q
+PYTHONPATH=. pytest tests/ -q   # without TEST_DATABASE_URL only the unit tests run
 # also against the compose bucket:
 TEST_S3_ENDPOINT_URL=http://localhost:9000 S3_ACCESS_KEY_ID=devzgo S3_SECRET_ACCESS_KEY=devzgo-secret S3_REGION=us-east-1 PYTHONPATH=. pytest tests/ -q
 ```

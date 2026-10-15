@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -20,4 +20,5 @@ class Connection(Base):
 
     __table_args__ = (
         UniqueConstraint("requester_id", "receiver_id", name="uq_requester_receiver"),
+        Index("ix_connections_receiver", "receiver_id"),
     )

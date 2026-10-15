@@ -1,10 +1,10 @@
 """
-One-command DB bootstrap for DevZ-Go.
+Startup database step for DevZ-Go.
 
-1. Create missing tables from SQLAlchemy models (greenfield-safe).
-2. Add any missing analysis columns (existing DBs).
-3. Stamp Alembic to head when possible (incomplete history).
-4. Seed the techstacks catalog.
+1. Apply Alembic migrations automatically on local databases (or when MIGRATE_ON_START=true).
+   Shared databases (e.g. Neon) are only reported, so schema changes there are applied deliberately:
+     alembic upgrade head
+2. Seed the techstacks catalog.
 
 Usage:
   python -m app.scripts.bootstrap_db
@@ -12,114 +12,43 @@ Usage:
 
 from __future__ import annotations
 
-import subprocess
-import sys
+import os
+from pathlib import Path
 
-from sqlalchemy import inspect, text
+from alembic import command
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import inspect
+from sqlalchemy.engine import make_url
 
-from app.db.base import Base
-from app.db.session import engine
+from app.db.session import DATABASE_URL, engine
 from app.scripts.seed_techstacks import seed
 
-
-def _ensure_analysis_columns() -> None:
-    """Add project columns that create_all will not add to an existing table."""
-    insp = inspect(engine)
-    if "projects" not in insp.get_table_names():
-        return
-    cols = {c["name"] for c in insp.get_columns("projects")}
-    statements: list[str] = []
-    # Team fields live on the model and are created on a fresh database.
-    # An older volume needs them added in place.
-    if "github_url" not in cols:
-        statements.append("ALTER TABLE projects ADD COLUMN github_url VARCHAR NULL")
-    if "analysis_summary" not in cols:
-        statements.append("ALTER TABLE projects ADD COLUMN analysis_summary TEXT NULL")
-    if "complexity" not in cols:
-        statements.append("ALTER TABLE projects ADD COLUMN complexity VARCHAR(32) NULL")
-    if "contribution_info" not in cols:
-        statements.append("ALTER TABLE projects ADD COLUMN contribution_info TEXT NULL")
-    if "language_stats" not in cols:
-        statements.append(
-            "ALTER TABLE projects ADD COLUMN language_stats JSONB NULL"
-        )
-    if "detected_tech_stack_ids" not in cols:
-        statements.append(
-            "ALTER TABLE projects ADD COLUMN detected_tech_stack_ids JSONB NULL"
-        )
-    if "category_other" not in cols:
-        statements.append(
-            "ALTER TABLE projects ADD COLUMN category_other VARCHAR(64) NULL"
-        )
-    if not statements:
-        return
-    with engine.begin() as conn:
-        for stmt in statements:
-            conn.execute(text(stmt))
-            print(f"[bootstrap] Applied: {stmt}")
+ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+LOCAL_HOSTS = {"db", "localhost", "127.0.0.1"}
 
 
-def _ensure_user_columns() -> None:
-    """Add-only: GitHub login column, and allow password-less (GitHub) accounts."""
-    cols = {c["name"]: c for c in inspect(engine).get_columns("users")}
-    with engine.begin() as conn:
-        if "github_id" not in cols:
-            conn.execute(text("ALTER TABLE users ADD COLUMN github_id VARCHAR(32) NULL"))
-            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_github_id ON users (github_id)"))
-            print("[bootstrap] Applied: users.github_id")
-        if not cols["password_hash"]["nullable"]:
-            conn.execute(text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"))
-            print("[bootstrap] Applied: users.password_hash nullable")
-
-
-_INDEXES = {
-    "ix_activities_user": "network_activities (user_id)",
-    "ix_activities_project": "network_activities (project_id)",
-    "ix_activities_created": "network_activities (created_at DESC)",
-    "ix_activity_likes_user": "activity_likes (user_id)",
-    "ix_activity_comments_activity": "activity_comments (activity_id)",
-    "ix_connections_receiver": "connections (receiver_id)",
-    "ix_messages_pair_created": "messages (sender_id, receiver_id, created_at)",
-    "ix_messages_receiver_unread": "messages (receiver_id) WHERE read = false",
-    "ix_notifications_recipient_created": "notifications (recipient_id, created_at DESC)",
-    "ix_collab_requests_project": "collaboration_requests (project_id)",
-    "ix_project_collaborators_user": "project_collaborators (user_id)",
-}
-
-
-def _ensure_indexes() -> None:
-    """Add-only: create social indexes that are missing (safe to run on every start)."""
-    with engine.begin() as conn:
-        for name, target in _INDEXES.items():
-            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {target}"))
-
-
-def _stamp_alembic_head() -> None:
-    """Mark Alembic at head without failing on incomplete history."""
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "alembic", "stamp", "head"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except Exception as exc:
-        print(f"[bootstrap] Alembic stamp skipped: {exc}")
+def migrate() -> None:
+    cfg = Config(str(ALEMBIC_INI))
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+    with engine.connect() as conn:
+        current = MigrationContext.configure(conn).get_current_revision()
+    if current == head:
+        print(f"[bootstrap] Schema is up to date ({head}).")
+    elif make_url(DATABASE_URL).host in LOCAL_HOSTS or os.getenv("MIGRATE_ON_START", "").lower() == "true":
+        print(f"[bootstrap] Migrating {current or 'empty'} -> {head}...")
+        command.upgrade(cfg, "head")
+    else:
+        print(f"[bootstrap] WARNING: shared database is at {current or 'no revision'}, code expects {head}. "
+              "Review the pending migrations, then run `alembic upgrade head` (or set MIGRATE_ON_START=true).")
 
 
 def bootstrap() -> None:
-    print("[bootstrap] Creating tables from models (if needed)...")
-    Base.metadata.create_all(bind=engine)
-    print("[bootstrap] Ensuring analysis columns...")
-    _ensure_analysis_columns()
-    print("[bootstrap] Ensuring user columns...")
-    _ensure_user_columns()
-    print("[bootstrap] Ensuring indexes...")
-    _ensure_indexes()
-    print("[bootstrap] Stamping Alembic head (best-effort)...")
-    _stamp_alembic_head()
-    print("[bootstrap] Seeding tech stacks...")
-    seed()
+    migrate()
+    if inspect(engine).has_table("techstacks"):
+        print("[bootstrap] Seeding tech stacks...")
+        seed()
     print("[bootstrap] Done.")
 
 

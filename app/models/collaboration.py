@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -22,6 +22,8 @@ class CollaborationRequest(Base):
     requester = relationship("User", foreign_keys=[requester_id], back_populates="collaboration_requests_sent")
     project_owner = relationship("User", foreign_keys=[project_owner_id], back_populates="collaboration_requests_received")
 
+    __table_args__ = (Index("ix_collab_requests_project", "project_id"),)
+
 class ProjectCollaborator(Base):
     __tablename__ = "project_collaborators"
 
@@ -36,4 +38,5 @@ class ProjectCollaborator(Base):
 
     __table_args__ = (
         UniqueConstraint("project_id", "user_id", name="uq_project_collaborator"),
+        Index("ix_project_collaborators_user", "user_id"),
     )

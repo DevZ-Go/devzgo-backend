@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime
+from sqlalchemy import Column, String, DateTime, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -13,8 +13,10 @@ class User(Base):
     email = Column(String, unique=True, nullable=False)
     # Null for accounts created through GitHub until the user sets a password (forgot-password flow).
     password_hash = Column(String, nullable=True)
-    github_id = Column(String(32), unique=True, nullable=True)
+    github_id = Column(String(32), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("uq_users_github_id", "github_id", unique=True),)
 
     # Projects owned by this user
     projects = relationship("Project", back_populates="owner")
