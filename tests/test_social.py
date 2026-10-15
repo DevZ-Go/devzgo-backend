@@ -137,3 +137,41 @@ def test_websocket_delivers_message_and_notification(client, make_user):
         assert events["message.new"]["message"]["content"] == "live?"
         assert events["message.new"]["message"]["is_outgoing"] is False
         assert events["notification.new"]["notification_type"] == "new_message"
+
+
+def test_password_reset_flow(client, make_user, monkeypatch):
+    import app.routes.auth as auth_routes
+
+    sent = []
+    monkeypatch.setattr(auth_routes, "send_email", lambda to, subject, html, note="": sent.append(note))
+    headers, _ = make_user()
+    email = client.get("/auth/me", headers=headers).json()["email"]
+
+    unknown = client.post("/auth/forgot-password", json={"email": "nobody@example.com"})
+    known = client.post("/auth/forgot-password", json={"email": email.upper()})
+    assert unknown.status_code == known.status_code == 200 and unknown.json() == known.json()
+    assert len(sent) == 1
+    client.post("/auth/forgot-password", json={"email": email})
+    assert len(sent) == 1  # second request inside a minute is ignored
+
+    token = sent[0].split("token=")[1]
+    assert client.post("/auth/reset-password", json={"token": "x" * 20, "new_password": "newpassword1"}).status_code == 400
+    assert client.post("/auth/reset-password", json={"token": token, "new_password": "short"}).status_code == 422
+    assert client.post("/auth/reset-password", json={"token": token, "new_password": "newpassword1"}).status_code == 200
+    assert client.post("/auth/reset-password", json={"token": token, "new_password": "another123"}).status_code == 400
+    assert client.post("/auth/login", data={"username": email, "password": "newpassword1"}).status_code == 200
+    assert client.post("/auth/login", data={"username": email, "password": "password123"}).status_code == 401
+
+
+def test_expired_reset_token_rejected(client, make_user):
+    import hashlib
+    from datetime import datetime, timedelta, timezone
+    from app.db.session import SessionLocal
+    from app.models.password_reset import PasswordResetToken
+
+    _, user_id = make_user()
+    with SessionLocal() as db:
+        db.add(PasswordResetToken(user_id=user_id, token_hash=hashlib.sha256(b"expired-token-123").hexdigest(),
+                                  expires_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
+        db.commit()
+    assert client.post("/auth/reset-password", json={"token": "expired-token-123", "new_password": "newpassword1"}).status_code == 400
