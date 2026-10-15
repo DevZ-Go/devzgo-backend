@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import or_, and_
+from sqlalchemy import or_
 from typing import List, Optional
 from uuid import UUID
 
@@ -10,6 +10,7 @@ from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.connection import Connection
 from app.models.collaboration import ProjectCollaborator
+from app.routes.connections import connection_state
 from app.services.social import user_summary, visible_project_filter
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.schemas.network import UserProfileResponse, UserProfileUpdate, ConnectionUserSummary
@@ -30,10 +31,11 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
 
     # Count stats (visible projects only, so private work is not revealed by the number)
     projects_count = db.query(Project.id).filter(Project.owner_id == user.id, visible_project_filter(viewer_id)).count() if db else 0
-    collaborations_count = db.query(ProjectCollaborator.id).filter(ProjectCollaborator.user_id == user.id).count() if db else 0
+    collaborations_count = db.query(ProjectCollaborator.id).join(Project, Project.id == ProjectCollaborator.project_id).filter(
+        ProjectCollaborator.user_id == user.id, visible_project_filter(viewer_id)).count() if db else 0
 
     connections_count = 0
-    connection_status = None
+    connection_status = connection_id = None
 
     if db:
         connections_count = db.query(Connection).filter(
@@ -42,20 +44,9 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
         ).count()
 
         if viewer_id:
-            if viewer_id == user.id:
-                connection_status = "self"
-            else:
-                conn = db.query(Connection).filter(
-                    or_(
-                        and_(Connection.requester_id == viewer_id, Connection.receiver_id == user.id),
-                        and_(Connection.requester_id == user.id, Connection.receiver_id == viewer_id),
-                    )
-                ).first()
-                if conn:
-                    if conn.status == "accepted":
-                        connection_status = "connected"
-                    elif conn.status == "pending":
-                        connection_status = "pending_sent" if conn.requester_id == viewer_id else "pending_received"
+            connection_status, connection_id = connection_state(db, viewer_id, user.id)
+            if connection_status == "accepted":
+                connection_status = "connected"
 
     return UserProfileResponse(
         id=profile.id if profile else user.id,
@@ -76,6 +67,7 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
         connections_count=connections_count,
         collaborations_count=collaborations_count,
         connection_status=connection_status,
+        connection_id=connection_id,
     )
 
 @router.get("/me", response_model=UserProfileResponse)

@@ -49,7 +49,8 @@ class UserProfileResponse(UserProfileBase):
     projects_count: int = 0
     connections_count: int = 0
     collaborations_count: int = 0
-    connection_status: Optional[str] = None  # None, "pending_sent", "pending_received", "connected"
+    connection_status: Optional[str] = None  # None, "self", "pending_sent", "pending_received", "connected"
+    connection_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
@@ -143,10 +144,16 @@ class ConnectionResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: Optional[datetime] = None
+    accepted_at: Optional[datetime] = None
     partner: ConnectionUserSummary
+    mutual_count: int = 0
 
     class Config:
         from_attributes = True
+
+class ConnectionPage(BaseModel):
+    items: List[ConnectionResponse]
+    next_page: Optional[str] = None
 
 class ConnectionStatusResponse(BaseModel):
     user_id: UUID
