@@ -46,7 +46,8 @@ services:
     # DATABASE_URL unset -> the local db container. Set it in .env (e.g. Neon) to use that database instead.
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://devzgo:devzgo@db:5432/devzgo_db}
-      SECRET_KEY: "supersecretkey"
+      # Set a long random SECRET_KEY in .env; the fallback is for local dev only.
+      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:9000}
       S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-${S3_ENDPOINT_URL:-http://localhost:9000}}

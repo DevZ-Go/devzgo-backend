@@ -1,118 +1,101 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_, desc, func
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import or_, and_, case, desc, func
 from typing import List, Optional
 from uuid import UUID
 
 from app.db.session import get_db
 from app.models.user import User
 from app.models.message import Message
-from app.models.notification import Notification
 from app.core.dependencies import get_current_user
+from app.services.social import display_name, notify, user_summary
 from app.schemas.network import (
     MessageCreate,
     MessageResponse,
     ConversationResponse,
-    ConnectionUserSummary,
 )
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
 
-def _user_summary(user: User) -> ConnectionUserSummary:
-    name = user.profile.full_name if user.profile and user.profile.full_name else user.username
-    headline = user.profile.headline if user.profile else None
-    avatar = user.profile.avatar_url if user.profile else None
-    return ConnectionUserSummary(
-        id=user.id,
-        username=user.username,
-        full_name=name,
-        headline=headline,
-        avatar_url=avatar,
+
+def _message_response(m: Message, viewer_id: UUID) -> MessageResponse:
+    return MessageResponse(
+        id=m.id,
+        sender_id=m.sender_id,
+        receiver_id=m.receiver_id,
+        content=m.content,
+        read=m.read,
+        created_at=m.created_at,
+        is_outgoing=(m.sender_id == viewer_id),
     )
+
 
 @router.get("/conversations", response_model=List[ConversationResponse])
 def get_conversations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Find all users with whom the current user has exchanged messages
-    all_msgs = db.query(Message).filter(
-        or_(
-            Message.sender_id == current_user.id,
-            Message.receiver_id == current_user.id,
+    me = current_user.id
+    partner = case((Message.sender_id == me, Message.receiver_id), else_=Message.sender_id)
+    # Latest message per partner in one query (Postgres DISTINCT ON).
+    latest = (
+        db.query(Message)
+        .filter(or_(Message.sender_id == me, Message.receiver_id == me))
+        .distinct(partner)
+        .order_by(partner, desc(Message.created_at))
+        .all()
+    )
+    partner_ids = [m.receiver_id if m.sender_id == me else m.sender_id for m in latest]
+    users = {u.id: u for u in db.query(User).options(selectinload(User.profile)).filter(User.id.in_(partner_ids))} if partner_ids else {}
+    unread = dict(
+        db.query(Message.sender_id, func.count())
+        .filter(Message.receiver_id == me, Message.read.is_(False))
+        .group_by(Message.sender_id).all()
+    )
+
+    conversations = [
+        ConversationResponse(
+            other_user=user_summary(users[pid]),
+            last_message=_message_response(m, me),
+            unread_count=unread.get(pid, 0),
         )
-    ).order_by(desc(Message.created_at)).all()
-
-    seen_partners = set()
-    conversations = []
-
-    for msg in all_msgs:
-        partner_id = msg.receiver_id if msg.sender_id == current_user.id else msg.sender_id
-        if partner_id in seen_partners:
-            continue
-        seen_partners.add(partner_id)
-
-        partner = db.query(User).filter(User.id == partner_id).first()
-        if not partner:
-            continue
-
-        # Count unread messages from this partner
-        unread_count = db.query(Message).filter(
-            Message.sender_id == partner_id,
-            Message.receiver_id == current_user.id,
-            Message.read == False,
-        ).count()
-
-        conversations.append(
-            ConversationResponse(
-                other_user=_user_summary(partner),
-                last_message=MessageResponse(
-                    id=msg.id,
-                    sender_id=msg.sender_id,
-                    receiver_id=msg.receiver_id,
-                    content=msg.content,
-                    read=msg.read,
-                    created_at=msg.created_at,
-                    is_outgoing=(msg.sender_id == current_user.id),
-                ),
-                unread_count=unread_count,
-            )
-        )
-
+        for m, pid in zip(latest, partner_ids) if pid in users
+    ]
+    conversations.sort(key=lambda c: c.last_message.created_at, reverse=True)
     return conversations
+
 
 @router.get("/conversations/{other_user_id}", response_model=List[MessageResponse])
 def get_message_thread(
     other_user_id: UUID,
+    before: Optional[datetime] = Query(None, description="Return messages older than this (pagination)"),
+    limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    messages = db.query(Message).filter(
+    me = current_user.id
+    query = db.query(Message).filter(
         or_(
-            and_(Message.sender_id == current_user.id, Message.receiver_id == other_user_id),
-            and_(Message.sender_id == other_user_id, Message.receiver_id == current_user.id),
+            and_(Message.sender_id == me, Message.receiver_id == other_user_id),
+            and_(Message.sender_id == other_user_id, Message.receiver_id == me),
         )
-    ).order_by(Message.created_at.asc()).all()
+    )
+    if before:
+        query = query.filter(Message.created_at < before)
+    messages = query.order_by(desc(Message.created_at)).limit(limit).all()[::-1]
 
-    # Automatically mark incoming messages as read
-    incoming_unread = [m for m in messages if m.receiver_id == current_user.id and not m.read]
-    if incoming_unread:
-        for m in incoming_unread:
-            m.read = True
+    if not before and db.query(Message).filter(
+        Message.sender_id == other_user_id, Message.receiver_id == me, Message.read.is_(False)
+    ).update({"read": True}):
         db.commit()
+        for m in messages:
+            if m.receiver_id == me:
+                m.read = True
 
-    return [
-        MessageResponse(
-            id=m.id,
-            sender_id=m.sender_id,
-            receiver_id=m.receiver_id,
-            content=m.content,
-            read=m.read,
-            created_at=m.created_at,
-            is_outgoing=(m.sender_id == current_user.id),
-        )
-        for m in messages
-    ]
+    return [_message_response(m, me) for m in messages]
+
 
 @router.post("", response_model=MessageResponse)
 def send_message(
@@ -123,45 +106,22 @@ def send_message(
     if msg_data.receiver_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot send message to yourself")
 
-    receiver = db.query(User).filter(User.id == msg_data.receiver_id).first()
-    if not receiver:
+    if not db.query(User.id).filter(User.id == msg_data.receiver_id).first():
         raise HTTPException(status_code=404, detail="Recipient developer not found")
 
     content = msg_data.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    new_msg = Message(
-        sender_id=current_user.id,
-        receiver_id=msg_data.receiver_id,
-        content=content,
-        read=False,
-    )
+    new_msg = Message(sender_id=current_user.id, receiver_id=msg_data.receiver_id, content=content, read=False)
     db.add(new_msg)
-
-    # Send notification to receiver
-    sender_name = current_user.profile.full_name if current_user.profile and current_user.profile.full_name else current_user.username
-    notif = Notification(
-        recipient_id=msg_data.receiver_id,
-        actor_id=current_user.id,
-        type="new_message",
-        related_id=str(current_user.id),
-        message=f"New message from {sender_name}: \"{content[:40]}...\"",
-    )
-    db.add(notif)
-
+    snippet = content if len(content) <= 40 else content[:40] + "..."
+    notify(db, msg_data.receiver_id, current_user, "new_message", str(current_user.id),
+           f"New message from {display_name(current_user)}: \"{snippet}\"")
     db.commit()
     db.refresh(new_msg)
+    return _message_response(new_msg, current_user.id)
 
-    return MessageResponse(
-        id=new_msg.id,
-        sender_id=new_msg.sender_id,
-        receiver_id=new_msg.receiver_id,
-        content=new_msg.content,
-        read=new_msg.read,
-        created_at=new_msg.created_at,
-        is_outgoing=True,
-    )
 
 @router.put("/read/{other_user_id}")
 def mark_thread_as_read(
@@ -172,10 +132,11 @@ def mark_thread_as_read(
     db.query(Message).filter(
         Message.sender_id == other_user_id,
         Message.receiver_id == current_user.id,
-        Message.read == False,
+        Message.read.is_(False),
     ).update({"read": True})
     db.commit()
     return {"message": "Messages marked as read"}
+
 
 @router.get("/unread-count")
 def get_unread_messages_count(
@@ -184,6 +145,6 @@ def get_unread_messages_count(
 ):
     count = db.query(Message).filter(
         Message.receiver_id == current_user.id,
-        Message.read == False,
+        Message.read.is_(False),
     ).count()
     return {"unread_count": count}

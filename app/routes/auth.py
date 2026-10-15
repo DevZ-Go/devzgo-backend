@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.schemas.user import UserCreate, UserLogin, UserResponse
 from app.db.session import get_db
@@ -10,13 +11,15 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 @router.post("/register", response_model=UserResponse)
 def register(user_data: UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
-    if existing_user:
+    email = user_data.email.strip().lower()
+    if db.query(User.id).filter(func.lower(User.email) == email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+    if db.query(User.id).filter(func.lower(User.username) == user_data.username.lower()).first():
+        raise HTTPException(status_code=400, detail="Username already taken")
+
     new_user = User(
         username=user_data.username,
-        email=user_data.email,
+        email=email,
         password_hash=hash_password(user_data.password)
     )
     db.add(new_user)
@@ -32,7 +35,7 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
-    user = db.query(User).filter(User.email == form_data.username).first()
+    user = db.query(User).filter(func.lower(User.email) == form_data.username.strip().lower()).first()
 
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")

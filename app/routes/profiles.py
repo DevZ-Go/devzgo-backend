@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import or_, and_
 from typing import List, Optional
 from uuid import UUID
@@ -10,7 +10,7 @@ from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.connection import Connection
 from app.models.collaboration import ProjectCollaborator
-from app.models.enums import ProjectVisibility
+from app.services.social import user_summary, visible_project_filter
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.schemas.network import UserProfileResponse, UserProfileUpdate, ConnectionUserSummary
 
@@ -28,9 +28,9 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
     skills = profile.skills if profile else None
     location = profile.location if profile else None
 
-    # Count stats
-    projects_count = len(user.projects) if user.projects else 0
-    collaborations_count = len(user.collaborations) if user.collaborations else 0
+    # Count stats (visible projects only, so private work is not revealed by the number)
+    projects_count = db.query(Project.id).filter(Project.owner_id == user.id, visible_project_filter(viewer_id)).count() if db else 0
+    collaborations_count = db.query(ProjectCollaborator.id).filter(ProjectCollaborator.user_id == user.id).count() if db else 0
 
     connections_count = 0
     connection_status = None
@@ -61,7 +61,7 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
         id=profile.id if profile else user.id,
         user_id=user.id,
         username=user.username,
-        email=user.email,
+        email=user.email if viewer_id == user.id else None,
         full_name=full_name,
         headline=headline,
         bio=bio,
@@ -96,24 +96,9 @@ def update_my_profile(
         profile = UserProfile(user_id=current_user.id)
         db.add(profile)
 
-    if profile_data.full_name is not None:
-        profile.full_name = profile_data.full_name
-    if profile_data.headline is not None:
-        profile.headline = profile_data.headline
-    if profile_data.bio is not None:
-        profile.bio = profile_data.bio
-    if profile_data.avatar_url is not None:
-        profile.avatar_url = profile_data.avatar_url
-    if profile_data.github_url is not None:
-        profile.github_url = profile_data.github_url
-    if profile_data.linkedin_url is not None:
-        profile.linkedin_url = profile_data.linkedin_url
-    if profile_data.website_url is not None:
-        profile.website_url = profile_data.website_url
-    if profile_data.skills is not None:
-        profile.skills = profile_data.skills
-    if profile_data.location is not None:
-        profile.location = profile_data.location
+    # Only fields sent by the client change; sending "" or null clears a field.
+    for field, value in profile_data.model_dump(exclude_unset=True).items():
+        setattr(profile, field, value.strip() or None if isinstance(value, str) else value)
 
     db.commit()
     db.refresh(profile)
@@ -126,7 +111,7 @@ def search_developers(
     db: Session = Depends(get_db),
 ):
     term = f"%{query.strip()}%"
-    users = db.query(User).outerjoin(User.profile).filter(
+    users = db.query(User).options(selectinload(User.profile)).outerjoin(User.profile).filter(
         or_(
             User.username.ilike(term),
             UserProfile.full_name.ilike(term),
@@ -135,21 +120,7 @@ def search_developers(
         )
     ).limit(limit).all()
 
-    results = []
-    for u in users:
-        name = u.profile.full_name if u.profile and u.profile.full_name else u.username
-        headline = u.profile.headline if u.profile else None
-        avatar = u.profile.avatar_url if u.profile else None
-        results.append(
-            ConnectionUserSummary(
-                id=u.id,
-                username=u.username,
-                full_name=name,
-                headline=headline,
-                avatar_url=avatar,
-            )
-        )
-    return results
+    return [user_summary(u) for u in users]
 
 @router.get("/{user_id}", response_model=UserProfileResponse)
 def get_user_profile(
