@@ -28,10 +28,11 @@ def client():
     from app.db.base import Base
     from app.db.session import engine
     from app.main import app
-    from app.scripts.bootstrap_db import _ensure_indexes
+    from app.scripts.bootstrap_db import _ensure_indexes, _ensure_user_columns
 
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    _ensure_user_columns()
     _ensure_indexes()
     with TestClient(app) as c:
         yield c

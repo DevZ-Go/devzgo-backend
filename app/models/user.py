@@ -11,7 +11,9 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(String, unique=True, nullable=False)
     email = Column(String, unique=True, nullable=False)
-    password_hash = Column(String, nullable=False)
+    # Null for accounts created through GitHub until the user sets a password (forgot-password flow).
+    password_hash = Column(String, nullable=True)
+    github_id = Column(String(32), unique=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Projects owned by this user

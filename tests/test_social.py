@@ -175,3 +175,43 @@ def test_expired_reset_token_rejected(client, make_user):
                                   expires_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
         db.commit()
     assert client.post("/auth/reset-password", json={"token": "expired-token-123", "new_password": "newpassword1"}).status_code == 400
+
+
+def _github_login(client, monkeypatch, identity):
+    import app.routes.github_auth as gh
+
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "cid")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(gh, "fetch_github_identity", lambda code: identity)
+    start = client.get("/auth/github/login", follow_redirects=False)
+    assert start.status_code == 307 and start.headers["location"].startswith("https://github.com/login/oauth/authorize")
+    state = start.headers["location"].split("state=")[1].split("&")[0]
+    done = client.get(f"/auth/github/callback?code=abc&state={state}", follow_redirects=False)
+    return done.headers["location"]
+
+
+def test_github_login_creates_then_reuses_account(client, monkeypatch):
+    identity = {"id": "9001", "login": "octo cat", "name": "Octo", "avatar_url": "https://a/x.png",
+                "html_url": "https://github.com/octocat", "email": "Octo@Example.com"}
+    first = _github_login(client, monkeypatch, identity)
+    assert "/auth/callback#token=" in first
+    headers = {"Authorization": "Bearer " + first.split("#token=")[1]}
+    me = client.get("/profiles/me", headers=headers).json()
+    assert me["username"] == "octocat" and me["github_url"] == "https://github.com/octocat" and me["email"] == "octo@example.com"
+    assert client.post("/auth/login", data={"username": "octo@example.com", "password": "anything1"}).status_code == 401
+
+    again = _github_login(client, monkeypatch, {**identity, "email": None})
+    assert client.get("/auth/me", headers={"Authorization": "Bearer " + again.split("#token=")[1]}).json()["id"] == me["user_id"]
+
+
+def test_github_login_links_by_verified_email_and_rejects_bad_state(client, make_user, monkeypatch):
+    headers, user_id = make_user()
+    email = client.get("/auth/me", headers=headers).json()["email"]
+    linked = _github_login(client, monkeypatch, {"id": "777", "login": "x", "name": None, "avatar_url": None,
+                                                 "html_url": "https://github.com/x", "email": email})
+    assert client.get("/auth/me", headers={"Authorization": "Bearer " + linked.split("#token=")[1]}).json()["id"] == user_id
+
+    other = _github_login(client, monkeypatch, {"id": "778", "login": "y", "name": None, "avatar_url": None,
+                                                "html_url": None, "email": email})
+    assert other.endswith("/login?error=github_linked")
+    assert client.get("/auth/github/callback?code=abc&state=forged", follow_redirects=False).headers["location"].endswith("error=github_state")

@@ -59,6 +59,19 @@ def _ensure_analysis_columns() -> None:
             print(f"[bootstrap] Applied: {stmt}")
 
 
+def _ensure_user_columns() -> None:
+    """Add-only: GitHub login column, and allow password-less (GitHub) accounts."""
+    cols = {c["name"]: c for c in inspect(engine).get_columns("users")}
+    with engine.begin() as conn:
+        if "github_id" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN github_id VARCHAR(32) NULL"))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_users_github_id ON users (github_id)"))
+            print("[bootstrap] Applied: users.github_id")
+        if not cols["password_hash"]["nullable"]:
+            conn.execute(text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"))
+            print("[bootstrap] Applied: users.password_hash nullable")
+
+
 _INDEXES = {
     "ix_activities_user": "network_activities (user_id)",
     "ix_activities_project": "network_activities (project_id)",
@@ -99,6 +112,8 @@ def bootstrap() -> None:
     Base.metadata.create_all(bind=engine)
     print("[bootstrap] Ensuring analysis columns...")
     _ensure_analysis_columns()
+    print("[bootstrap] Ensuring user columns...")
+    _ensure_user_columns()
     print("[bootstrap] Ensuring indexes...")
     _ensure_indexes()
     print("[bootstrap] Stamping Alembic head (best-effort)...")
