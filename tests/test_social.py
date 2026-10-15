@@ -113,3 +113,27 @@ def test_project_likes(client, make_user):
     assert len([n for n in client.get("/notifications", headers=owner).json() if n["type"] == "project_like"]) == 1
     assert client.delete(f"/projects/{public_id}/like", headers=fan).json()["likes_count"] == 0
     assert client.delete(f"/projects/{public_id}", headers=owner).status_code == 204
+
+
+def test_websocket_rejects_bad_token(client):
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"token": "not-a-jwt"})
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4401
+
+
+def test_websocket_delivers_message_and_notification(client, make_user):
+    a, a_id = make_user()
+    b, b_id = make_user()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"token": b["Authorization"].split()[1]})
+        assert ws.receive_json() == {"type": "ready"}
+        assert client.post("/messages", headers=a, json={"receiver_id": b_id, "content": "live?"}).status_code == 200
+        events = {e["type"]: e for e in (ws.receive_json(), ws.receive_json())}
+        assert events["message.new"]["message"]["content"] == "live?"
+        assert events["message.new"]["message"]["is_outgoing"] is False
+        assert events["notification.new"]["notification_type"] == "new_message"
