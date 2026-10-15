@@ -11,9 +11,9 @@ from app.models.project import Project
 from app.models.connection import Connection
 from app.models.collaboration import ProjectCollaborator
 from app.routes.connections import connection_state
-from app.services.social import user_summary, visible_project_filter
+from app.services.social import project_stats, user_summary, visible_project_filter
 from app.core.dependencies import get_current_user, get_current_user_optional
-from app.schemas.network import UserProfileResponse, UserProfileUpdate, ConnectionUserSummary
+from app.schemas.network import UserProfileResponse, UserProfileUpdate, ConnectionUserSummary, ProjectPreview
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
@@ -126,3 +126,23 @@ def get_user_profile(
 
     viewer_id = current_user.id if current_user else None
     return _build_profile_response(user, viewer_id, db)
+
+
+@router.get("/{user_id}/collaborations", response_model=List[ProjectPreview])
+def get_user_collaborations(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Projects this person joined (accepted memberships only) that the viewer is allowed to see."""
+    viewer_id = current_user.id if current_user else None
+    rows = (db.query(Project, ProjectCollaborator.role)
+            .join(ProjectCollaborator, ProjectCollaborator.project_id == Project.id)
+            .options(selectinload(Project.owner), selectinload(Project.tech_stacks))
+            .filter(ProjectCollaborator.user_id == user_id, visible_project_filter(viewer_id))
+            .order_by(ProjectCollaborator.created_at.desc()).all())
+    stats = project_stats(db, [p.id for p, _ in rows], viewer_id)
+    return [ProjectPreview(id=p.id, title=p.title, short_description=p.short_description, cover_image_url=p.cover_image_url,
+                           tech_stacks=[t.name for t in p.tech_stacks], category=str(p.category.value if hasattr(p.category, "value") else p.category),
+                           contribution_info=role, owner_username=p.owner.username, **stats[p.id])
+            for p, role in rows]

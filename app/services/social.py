@@ -48,6 +48,15 @@ def can_view_project(db: Session, project: Project, viewer_id: Optional[UUID]) -
     return db.query(Project.id).filter(Project.id == project.id, visible_project_filter(viewer_id)).first() is not None
 
 
+def project_access(db: Session, project: Project, user_id: Optional[UUID]) -> Dict[str, bool]:
+    """What one person may do with a project: the owner may do everything; members get view plus the flags the owner chose."""
+    if user_id is not None and project.owner_id == user_id:
+        return dict(owner=True, member=False, view=True, edit=True, files=True, secrets=True)
+    m = db.query(ProjectCollaborator).filter_by(project_id=project.id, user_id=user_id).first() if user_id else None
+    return dict(owner=False, member=m is not None, view=m is not None or project.visibility == ProjectVisibility.PUBLIC,
+                edit=bool(m and m.can_edit_details), files=bool(m and m.can_manage_files), secrets=bool(m and m.can_view_secrets))
+
+
 def project_stats(db: Session, project_ids, viewer_id: Optional[UUID]) -> Dict[UUID, dict]:
     """likes_count, is_liked and comments_count per project, in three grouped queries."""
     ids = list(set(project_ids))

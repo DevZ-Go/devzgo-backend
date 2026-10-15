@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 # Importing the database base and engine to ensure that the database tables are created when the application starts
+from app.core.errors import Conflict, conflict_handler
 from app.db.base import Base
 from app.db.session import engine
 from app.routes.auth import router as auth_router
@@ -87,6 +88,7 @@ app.include_router(media_router)
 # Create the database tables based on the models defined in the Base metadata.
 Base.metadata.create_all(bind=engine)
 
+app.add_exception_handler(Conflict, conflict_handler)
 app.include_router(auth_router)
 app.include_router(github_auth_router)
 app.include_router(projects_router)

@@ -183,9 +183,41 @@ class ConversationResponse(BaseModel):
     unread_count: int = 0
 
 # ==================== COLLABORATIONS ====================
+class CollabPermissions(BaseModel):
+    """Optional extras the owner grants a member; viewing the project is always included."""
+    can_edit_details: bool = False
+    can_manage_files: bool = False
+    can_view_secrets: bool = False
+
 class CollaborationRequestCreate(BaseModel):
     message: Optional[str] = Field(default=None, max_length=2000)
     role: str = Field(default="Collaborator", min_length=1, max_length=100)
+
+class InvitationCreate(CollaborationRequestCreate):
+    username: str = Field(min_length=1, max_length=30)
+    permissions: CollabPermissions = CollabPermissions()
+
+class InvitationResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    project_title: str
+    inviter: ConnectionUserSummary
+    invitee: ConnectionUserSummary
+    role: str
+    message: Optional[str] = None
+    permissions: CollabPermissions
+    status: str
+    created_at: datetime
+    expires_at: datetime
+
+class InviteeResult(ConnectionUserSummary):
+    status: Literal["member", "invited", "requested", "none"]
+
+class MyCollabStatus(BaseModel):
+    status: Literal["owner", "member", "requested", "invited", "none"]
+    request_id: Optional[UUID] = None
+    invitation_id: Optional[UUID] = None
+    permissions: CollabPermissions = CollabPermissions()
 
 class CollaborationRequestResponse(BaseModel):
     id: UUID
@@ -212,6 +244,8 @@ class ProjectCollaboratorResponse(BaseModel):
     avatar_url: Optional[str] = None
     role: str
     created_at: datetime
+    is_owner: bool = False
+    permissions: CollabPermissions = CollabPermissions()
 
     class Config:
         from_attributes = True

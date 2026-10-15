@@ -1,6 +1,6 @@
 from uuid import UUID
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
-from typing import Annotated, List, Optional
+from typing import Annotated, Dict, List, Optional
 from datetime import datetime
 from app.models.enums import ProjectCategory, ProjectVisibility
 from app.schemas.network import ConnectionUserSummary
@@ -105,6 +105,7 @@ class ProjectResponse(BaseModel):
     is_liked: bool = False
     comments_count: int = 0
     comments_enabled: bool = True
+    access: Optional[Dict[str, bool]] = None  # owner, member, view, edit, files, secrets for this viewer
 
     class Config:
         from_attributes = True

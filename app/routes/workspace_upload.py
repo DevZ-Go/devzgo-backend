@@ -21,6 +21,7 @@ from app.models.file import File as FileRecord
 from app.models.project import Project
 from app.models.user import User
 from app.services import storage
+from app.services.social import project_access
 from app.services.project_analysis import (
     analyze_workspace,
     resolve_tech_stacks_from_names,
@@ -174,7 +175,7 @@ def perform_workspace_zip_upload(
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id != current_user.id:
+    if not project_access(db, project, current_user.id)["files"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
     in_bucket = storage.is_s3()

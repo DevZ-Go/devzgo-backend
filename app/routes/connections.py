@@ -6,11 +6,11 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
 from sqlalchemy import and_, not_, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.dependencies import get_current_user
+from app.core.errors import Conflict
 from app.db.session import get_db
 from app.models.connection import Connection
 from app.models.profile import UserProfile
@@ -139,9 +139,8 @@ def send_connection_request(data: ConnectionRequestCreate, db: Session = Depends
     if c and c.status == "accepted":
         raise HTTPException(status_code=409, detail="Already connected")
     if c and c.status == "pending" and c.receiver_id == me.id:
-        return JSONResponse(status_code=409, content={
-            "detail": "This developer already sent you a request. Accept or decline it.",
-            "code": "incoming_request_exists", "connection_id": str(c.id)})
+        raise Conflict("incoming_request_exists", "This developer already sent you a request. Accept or decline it.",
+                       connection_id=c.id)
     if c and (c.status == "pending" or (_cooling_down(c) and c.requester_id == me.id)):
         return _view(c, me.id)  # already asked (or quietly declined): nothing changes, nobody is notified again
 
