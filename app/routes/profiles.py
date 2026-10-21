@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import or_, and_
+from sqlalchemy import or_
 from typing import List, Optional
 from uuid import UUID
 
@@ -10,9 +10,10 @@ from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.connection import Connection
 from app.models.collaboration import ProjectCollaborator
-from app.services.social import user_summary, visible_project_filter
+from app.routes.connections import connection_state
+from app.services.social import project_stats, user_summary, visible_project_filter
 from app.core.dependencies import get_current_user, get_current_user_optional
-from app.schemas.network import UserProfileResponse, UserProfileUpdate, ConnectionUserSummary
+from app.schemas.network import UserProfileResponse, UserProfileUpdate, ConnectionUserSummary, ProjectPreview
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
@@ -30,10 +31,11 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
 
     # Count stats (visible projects only, so private work is not revealed by the number)
     projects_count = db.query(Project.id).filter(Project.owner_id == user.id, visible_project_filter(viewer_id)).count() if db else 0
-    collaborations_count = db.query(ProjectCollaborator.id).filter(ProjectCollaborator.user_id == user.id).count() if db else 0
+    collaborations_count = db.query(ProjectCollaborator.id).join(Project, Project.id == ProjectCollaborator.project_id).filter(
+        ProjectCollaborator.user_id == user.id, visible_project_filter(viewer_id)).count() if db else 0
 
     connections_count = 0
-    connection_status = None
+    connection_status = connection_id = None
 
     if db:
         connections_count = db.query(Connection).filter(
@@ -42,26 +44,16 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
         ).count()
 
         if viewer_id:
-            if viewer_id == user.id:
-                connection_status = "self"
-            else:
-                conn = db.query(Connection).filter(
-                    or_(
-                        and_(Connection.requester_id == viewer_id, Connection.receiver_id == user.id),
-                        and_(Connection.requester_id == user.id, Connection.receiver_id == viewer_id),
-                    )
-                ).first()
-                if conn:
-                    if conn.status == "accepted":
-                        connection_status = "connected"
-                    elif conn.status == "pending":
-                        connection_status = "pending_sent" if conn.requester_id == viewer_id else "pending_received"
+            connection_status, connection_id = connection_state(db, viewer_id, user.id)
+            if connection_status == "accepted":
+                connection_status = "connected"
 
     return UserProfileResponse(
         id=profile.id if profile else user.id,
         user_id=user.id,
         username=user.username,
         email=user.email if viewer_id == user.id else None,
+        timezone=profile.timezone if profile and viewer_id == user.id else None,
         full_name=full_name,
         headline=headline,
         bio=bio,
@@ -76,6 +68,7 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
         connections_count=connections_count,
         collaborations_count=collaborations_count,
         connection_status=connection_status,
+        connection_id=connection_id,
     )
 
 @router.get("/me", response_model=UserProfileResponse)
@@ -98,6 +91,8 @@ def update_my_profile(
 
     # Only fields sent by the client change; sending "" or null clears a field.
     for field, value in profile_data.model_dump(exclude_unset=True).items():
+        if field == "timezone" and not value:
+            continue  # always set; clearing it is not allowed
         setattr(profile, field, value.strip() or None if isinstance(value, str) else value)
 
     db.commit()
@@ -134,3 +129,23 @@ def get_user_profile(
 
     viewer_id = current_user.id if current_user else None
     return _build_profile_response(user, viewer_id, db)
+
+
+@router.get("/{user_id}/collaborations", response_model=List[ProjectPreview])
+def get_user_collaborations(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+):
+    """Projects this person joined (accepted memberships only) that the viewer is allowed to see."""
+    viewer_id = current_user.id if current_user else None
+    rows = (db.query(Project, ProjectCollaborator.role)
+            .join(ProjectCollaborator, ProjectCollaborator.project_id == Project.id)
+            .options(selectinload(Project.owner), selectinload(Project.tech_stacks))
+            .filter(ProjectCollaborator.user_id == user_id, visible_project_filter(viewer_id))
+            .order_by(ProjectCollaborator.created_at.desc()).all())
+    stats = project_stats(db, [p.id for p, _ in rows], viewer_id)
+    return [ProjectPreview(id=p.id, title=p.title, short_description=p.short_description, cover_image_url=p.cover_image_url,
+                           tech_stacks=[t.name for t in p.tech_stacks], category=str(p.category.value if hasattr(p.category, "value") else p.category),
+                           contribution_info=role, owner_username=p.owner.username, **stats[p.id])
+            for p, role in rows]

@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision: str = "001_cat_other"
@@ -17,12 +18,16 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_column() -> bool:
+    insp = inspect(op.get_bind())
+    return insp.has_table("projects") and "category_other" in {c["name"] for c in insp.get_columns("projects")}
+
+
 def upgrade() -> None:
-    op.add_column(
-        "projects",
-        sa.Column("category_other", sa.String(length=64), nullable=True),
-    )
+    # Empty databases get the column from the 003 baseline instead.
+    if inspect(op.get_bind()).has_table("projects") and not _has_column():
+        op.add_column("projects", sa.Column("category_other", sa.String(length=64), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("projects", "category_other")
+    pass  # never drop data; the baseline owns this column

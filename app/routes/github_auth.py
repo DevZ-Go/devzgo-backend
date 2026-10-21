@@ -2,7 +2,9 @@
 Sign in with GitHub (OAuth web flow).
 
 /auth/github/login -> GitHub consent -> /auth/github/callback -> FRONTEND_URL/auth/callback#token=<JWT>
-The token travels in the URL fragment, which browsers never send to servers or put in Referer headers.
+New GitHub users go to FRONTEND_URL/auth/github/onboarding#token=<onboarding token>&suggested=<name> instead,
+choose a username, and POST /auth/github/complete to create the account.
+Tokens travel in the URL fragment, which browsers never send to servers or put in Referer headers.
 """
 
 import os
@@ -18,14 +20,18 @@ from jose import JWTError, jwt
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.security import ALGORITHM, SECRET_KEY, create_access_token
+from app.core.policy import username_problem
+from app.core.security import ALGORITHM, SECRET_KEY, issue_token
 from app.db.session import get_db
 from app.models.profile import UserProfile
 from app.models.user import User
+from app.routes.auth import save_new_user, username_taken
+from app.schemas.user import GitHubCompleteRequest
 
 router = APIRouter(prefix="/auth/github", tags=["Auth"])
 
 STATE_COOKIE = "gh_oauth_state"
+ONBOARDING_TTL = timedelta(minutes=15)
 
 
 def _frontend(path: str) -> str:
@@ -66,16 +72,18 @@ def fetch_github_identity(code: str) -> dict:
             "avatar_url": user.get("avatar_url"), "html_url": user.get("html_url"), "email": primary}
 
 
-def _unique_username(db: Session, login: str) -> str:
-    base = re.sub(r"[^A-Za-z0-9_.-]", "", login)[:28] or "dev"
+def suggest_username(db: Session, login: str) -> str:
+    """A free, valid username close to the GitHub login, offered as the onboarding default."""
+    base = re.sub(r"[^a-z0-9_.-]", "", login.lower()).strip(".-")[:26]
+    base = base if len(base) >= 3 and not username_problem(base) else f"dev{base}"[:26].strip(".-")
     name, n = base, 1
-    while db.query(User.id).filter(func.lower(User.username) == name.lower()).first():
+    while username_taken(db, name):
         n += 1
         name = f"{base}{n}"
     return name
 
 
-def _find_or_create_user(db: Session, gh: dict) -> User:
+def _find_user(db: Session, gh: dict) -> User | None:
     user = db.query(User).filter(User.github_id == gh["id"]).first()
     if not user and gh["email"]:
         # Link only through an email GitHub has verified, so nobody can claim another person's account.
@@ -84,13 +92,12 @@ def _find_or_create_user(db: Session, gh: dict) -> User:
             raise ValueError("github_linked")  # that account belongs to a different GitHub user
         if user:
             user.github_id = gh["id"]
-    if not user:
-        if not gh["email"]:
-            raise ValueError("github_email")
-        user = User(username=_unique_username(db, gh["login"]), email=gh["email"].lower(), github_id=gh["id"], password_hash=None)
-        db.add(user)
-        db.flush()
+    if not user and not gh["email"]:
+        raise ValueError("github_email")
+    return user
 
+
+def _fill_profile(db: Session, user: User, gh: dict) -> None:
     profile = user.profile or UserProfile(user_id=user.id)
     if not user.profile:
         db.add(profile)
@@ -98,7 +105,6 @@ def _find_or_create_user(db: Session, gh: dict) -> User:
     profile.avatar_url = profile.avatar_url or gh["avatar_url"]
     profile.full_name = profile.full_name or gh["name"]
     db.commit()
-    return user
 
 
 @router.get("/login", include_in_schema=False)
@@ -129,13 +135,41 @@ def github_callback(request: Request, code: str = "", state: str = "", db: Sessi
         return _fail("github_state")
 
     try:
-        user = _find_or_create_user(db, fetch_github_identity(code))
+        gh = fetch_github_identity(code)
+        user = _find_user(db, gh)
     except ValueError as exc:
         db.rollback()
         return _fail(str(exc) if str(exc).startswith("github_") else "github")
     except httpx.HTTPError:
         return _fail("github")
 
-    response = RedirectResponse(_frontend(f"/auth/callback#token={create_access_token({'sub': str(user.id)})}"))
+    if user:
+        _fill_profile(db, user, gh)
+        target = f"/auth/callback#token={issue_token(user)}"
+    else:  # first visit: the account is created once the person picks a username
+        onboarding = jwt.encode({"purpose": "github_onboarding", "gh": gh, "exp": datetime.now(timezone.utc) + ONBOARDING_TTL},
+                                SECRET_KEY, algorithm=ALGORITHM)
+        target = f"/auth/github/onboarding#{urlencode({'token': onboarding, 'suggested': suggest_username(db, gh['login'])})}"
+    response = RedirectResponse(_frontend(target))
     response.delete_cookie(STATE_COOKIE)
     return response
+
+
+@router.post("/complete")
+def github_complete(data: GitHubCompleteRequest, db: Session = Depends(get_db)):
+    try:
+        claims = jwt.decode(data.onboarding_token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        claims = {}
+    if claims.get("purpose") != "github_onboarding":
+        raise HTTPException(status_code=400, detail="This sign-up link has expired. Sign in with GitHub again.")
+    gh = claims["gh"]
+    user = db.query(User).filter(User.github_id == gh["id"]).first()  # completed already in another tab
+    if not user:
+        if username_taken(db, data.username):
+            raise HTTPException(status_code=409, detail="Username already taken")
+        if db.query(User.id).filter(func.lower(User.email) == gh["email"].lower()).first():
+            raise HTTPException(status_code=409, detail="Email already registered")
+        user = save_new_user(db, User(username=data.username, email=gh["email"].lower(), github_id=gh["id"], password_hash=None))
+    _fill_profile(db, user, gh)
+    return {"access_token": issue_token(user), "token_type": "bearer"}

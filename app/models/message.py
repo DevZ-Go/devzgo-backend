@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Text, Boolean, DateTime, ForeignKey, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -17,3 +17,8 @@ class Message(Base):
 
     sender = relationship("User", foreign_keys=[sender_id], back_populates="messages_sent")
     receiver = relationship("User", foreign_keys=[receiver_id], back_populates="messages_received")
+
+    __table_args__ = (
+        Index("ix_messages_pair_created", "sender_id", "receiver_id", "created_at"),
+        Index("ix_messages_receiver_unread", "receiver_id", postgresql_where=text("read = false")),
+    )

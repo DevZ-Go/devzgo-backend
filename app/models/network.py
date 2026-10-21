@@ -1,9 +1,11 @@
 import uuid
-from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, Text, Boolean, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
+
+USER_POST_TYPES = ("post", "milestone", "collab_call", "project_update")  # written by people; the rest are system events
 
 class NetworkActivity(Base):
     __tablename__ = "network_activities"
@@ -23,6 +25,12 @@ class NetworkActivity(Base):
     likes = relationship("ActivityLike", back_populates="activity", cascade="all, delete-orphan")
     comments = relationship("ActivityComment", back_populates="activity", cascade="all, delete-orphan", order_by="ActivityComment.created_at.asc()")
 
+    __table_args__ = (
+        Index("ix_activities_user", "user_id"),
+        Index("ix_activities_project", "project_id"),
+        Index("ix_activities_created", created_at.desc()),
+    )
+
 class ActivityLike(Base):
     __tablename__ = "activity_likes"
 
@@ -36,6 +44,7 @@ class ActivityLike(Base):
 
     __table_args__ = (
         UniqueConstraint("activity_id", "user_id", name="uq_activity_user_like"),
+        Index("ix_activity_likes_user", "user_id"),
     )
 
 class ActivityComment(Base):
@@ -49,3 +58,5 @@ class ActivityComment(Base):
 
     activity = relationship("NetworkActivity", back_populates="comments")
     author = relationship("User", back_populates="comments")
+
+    __table_args__ = (Index("ix_activity_comments_activity", "activity_id"),)

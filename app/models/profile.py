@@ -5,6 +5,8 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.session import Base
 
+DEFAULT_TIMEZONE = "America/Toronto"
+
 class UserProfile(Base):
     __tablename__ = "profiles"
 
@@ -20,6 +22,7 @@ class UserProfile(Base):
     website_url = Column(String, nullable=True)
     skills = Column(Text, nullable=True)  # Comma-separated or JSON list of skills
     location = Column(String, nullable=True)
+    timezone = Column(String(64), nullable=False, server_default=DEFAULT_TIMEZONE)  # IANA name; Monthly Wrap months follow it
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

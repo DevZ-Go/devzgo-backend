@@ -4,17 +4,17 @@ import contextlib
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from app.core.dependencies import user_id_from_token
+from app.core.dependencies import user_from_token
 from app.db.session import SessionLocal
-from app.models.user import User
 from app.realtime.broadcaster import broadcaster
 
 router = APIRouter(tags=["Realtime"])
 
 
-def _user_exists(user_id: str) -> bool:
+def _user_id(token) -> str | None:
     with SessionLocal() as db:
-        return db.query(User.id).filter(User.id == user_id).first() is not None
+        user = user_from_token(db, token if isinstance(token, str) else None)
+        return str(user.id) if user else None
 
 
 @router.websocket("/ws")
@@ -23,8 +23,8 @@ async def realtime_socket(websocket: WebSocket):
     await websocket.accept()
     try:
         first = await asyncio.wait_for(websocket.receive_json(), timeout=10)
-        user_id = user_id_from_token(first.get("token") if isinstance(first, dict) else None)
-        if not user_id or not await run_in_threadpool(_user_exists, user_id):
+        user_id = await run_in_threadpool(_user_id, first.get("token") if isinstance(first, dict) else None)
+        if not user_id:
             raise ValueError("unauthorized")
     except (asyncio.TimeoutError, ValueError, WebSocketDisconnect):
         with contextlib.suppress(Exception):

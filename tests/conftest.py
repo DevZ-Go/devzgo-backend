@@ -8,6 +8,7 @@ whose name ends in "_test" (e.g. the local compose db), so the shared database i
 
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,7 @@ if TEST_DB:
     os.environ["DATABASE_URL"] = TEST_DB
     os.environ["STORAGE_BACKEND"] = "local"
     os.environ.setdefault("SECRET_KEY", "test-secret")
+    os.environ["WRAP_JOB"] = "off"  # tests call the generator directly
 
 
 @pytest.fixture(scope="session")
@@ -25,18 +27,26 @@ def client():
     if not TEST_DB:
         pytest.skip("TEST_DATABASE_URL not set")
     from fastapi.testclient import TestClient
-    from app.db.base import Base
     from app.db.session import engine
     from app.main import app
-    from app.scripts.bootstrap_db import _ensure_indexes, _ensure_user_columns
 
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    _ensure_user_columns()
-    _ensure_indexes()
+    reset_schema(engine)
     with TestClient(app) as c:
         yield c
-    Base.metadata.drop_all(bind=engine)
+
+
+def reset_schema(engine):
+    """Empty the test database and build it through the real migrations."""
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
+    cfg = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "head")
 
 
 @pytest.fixture
@@ -44,8 +54,8 @@ def make_user(client):
     """Register a fresh user and return (auth headers, user id)."""
     def _make():
         name = "u" + uuid.uuid4().hex[:10]
-        client.post("/auth/register", json={"username": name, "email": f"{name}@example.com", "password": "password123"})
-        token = client.post("/auth/login", data={"username": f"{name}@example.com", "password": "password123"}).json()["access_token"]
+        client.post("/auth/register", json={"username": name, "email": f"{name}@example.com", "password": "Password1!"})
+        token = client.post("/auth/login", data={"username": f"{name}@example.com", "password": "Password1!"}).json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
         return headers, client.get("/auth/me", headers=headers).json()["id"]
     return _make

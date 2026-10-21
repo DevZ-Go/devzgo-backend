@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey, DateTime, Enum, Table, Text
+from sqlalchemy import Boolean, Column, String, ForeignKey, DateTime, Enum, Table, Text, true
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
@@ -45,6 +45,8 @@ class Project(Base):
     language_stats = Column(JSONB, nullable=True)
     # [1, 5, 12] — TechStack catalog ids from the last workspace analysis
     detected_tech_stack_ids = Column(JSONB, nullable=True)
+
+    comments_enabled = Column(Boolean, nullable=False, server_default=true())
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

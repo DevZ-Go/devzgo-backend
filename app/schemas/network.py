@@ -2,6 +2,7 @@ from uuid import UUID
 from pydantic import AfterValidator, BaseModel, Field
 from typing import Annotated, List, Literal, Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def _link(value: Optional[str]) -> Optional[str]:
@@ -15,6 +16,17 @@ def _link(value: Optional[str]) -> Optional[str]:
 
 
 Link = Annotated[Optional[str], Field(default=None, max_length=500), AfterValidator(_link)]
+
+
+def _timezone(value: str) -> str:
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("Unknown timezone")
+    return value
+
+
+TimeZone = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(_timezone)]
 ShortText = Annotated[Optional[str], Field(default=None, max_length=255)]
 
 # ==================== PROFILES ====================
@@ -39,17 +51,20 @@ class UserProfileUpdate(UserProfileBase):
     website_url: Link = None
     skills: Optional[str] = Field(default=None, max_length=1000)
     location: ShortText = None
+    timezone: Optional[TimeZone] = None
 
 class UserProfileResponse(UserProfileBase):
     id: UUID
     user_id: UUID
     username: str
     email: Optional[str] = None  # only filled in on /profiles/me
+    timezone: Optional[str] = None  # only filled in on /profiles/me
     created_at: datetime
     projects_count: int = 0
     connections_count: int = 0
     collaborations_count: int = 0
-    connection_status: Optional[str] = None  # None, "pending_sent", "pending_received", "connected"
+    connection_status: Optional[str] = None  # None, "self", "pending_sent", "pending_received", "connected"
+    connection_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
@@ -67,9 +82,14 @@ class ActivityCommentResponse(BaseModel):
     author_avatar: Optional[str] = None
     comment_text: str
     created_at: datetime
+    can_delete: bool = False  # the comment's author or the post's author
 
     class Config:
         from_attributes = True
+
+class ActivityCommentPage(BaseModel):
+    items: List[ActivityCommentResponse]
+    next_page: Optional[str] = None
 
 class ActivityLikeResponse(BaseModel):
     activity_id: UUID
@@ -80,9 +100,13 @@ class ActivityLikeResponse(BaseModel):
 class FeedPostCreate(BaseModel):
     title: ShortText = None
     content: str = Field(min_length=1, max_length=5000)
-    activity_type: Literal["post", "project_update"] = "post"
+    activity_type: Literal["post", "milestone", "collab_call", "project_update"] = "post"
     project_id: Optional[UUID] = None
     media_url: Link = None
+
+class FeedPostUpdate(BaseModel):
+    title: ShortText = None
+    content: Optional[str] = Field(default=None, min_length=1, max_length=5000)
 
 class ProjectPreview(BaseModel):
     id: UUID
@@ -95,6 +119,9 @@ class ProjectPreview(BaseModel):
     complexity: Optional[str] = None
     contribution_info: Optional[str] = None
     owner_username: Optional[str] = None
+    likes_count: int = 0
+    is_liked: bool = False
+    comments_count: int = 0
 
     class Config:
         from_attributes = True
@@ -117,10 +144,15 @@ class FeedActivityResponse(BaseModel):
     likes_count: int = 0
     is_liked: bool = False
     comments_count: int = 0
-    comments: List[ActivityCommentResponse] = []
+    comments: List[ActivityCommentResponse] = []  # the latest two, oldest first; the rest via /comments
+    can_edit: bool = False  # author of a user post (system events cannot be edited)
 
     class Config:
         from_attributes = True
+
+class FeedPage(BaseModel):
+    items: List[FeedActivityResponse]
+    next_page: Optional[str] = None
 
 # ==================== CONNECTIONS ====================
 class ConnectionRequestCreate(BaseModel):
@@ -140,10 +172,16 @@ class ConnectionResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: Optional[datetime] = None
+    accepted_at: Optional[datetime] = None
     partner: ConnectionUserSummary
+    mutual_count: int = 0
 
     class Config:
         from_attributes = True
+
+class ConnectionPage(BaseModel):
+    items: List[ConnectionResponse]
+    next_page: Optional[str] = None
 
 class ConnectionStatusResponse(BaseModel):
     user_id: UUID
@@ -173,9 +211,41 @@ class ConversationResponse(BaseModel):
     unread_count: int = 0
 
 # ==================== COLLABORATIONS ====================
+class CollabPermissions(BaseModel):
+    """Optional extras the owner grants a member; viewing the project is always included."""
+    can_edit_details: bool = False
+    can_manage_files: bool = False
+    can_view_secrets: bool = False
+
 class CollaborationRequestCreate(BaseModel):
     message: Optional[str] = Field(default=None, max_length=2000)
     role: str = Field(default="Collaborator", min_length=1, max_length=100)
+
+class InvitationCreate(CollaborationRequestCreate):
+    username: str = Field(min_length=1, max_length=30)
+    permissions: CollabPermissions = CollabPermissions()
+
+class InvitationResponse(BaseModel):
+    id: UUID
+    project_id: UUID
+    project_title: str
+    inviter: ConnectionUserSummary
+    invitee: ConnectionUserSummary
+    role: str
+    message: Optional[str] = None
+    permissions: CollabPermissions
+    status: str
+    created_at: datetime
+    expires_at: datetime
+
+class InviteeResult(ConnectionUserSummary):
+    status: Literal["member", "invited", "requested", "none"]
+
+class MyCollabStatus(BaseModel):
+    status: Literal["owner", "member", "requested", "invited", "none"]
+    request_id: Optional[UUID] = None
+    invitation_id: Optional[UUID] = None
+    permissions: CollabPermissions = CollabPermissions()
 
 class CollaborationRequestResponse(BaseModel):
     id: UUID
@@ -202,6 +272,8 @@ class ProjectCollaboratorResponse(BaseModel):
     avatar_url: Optional[str] = None
     role: str
     created_at: datetime
+    is_owner: bool = False
+    permissions: CollabPermissions = CollabPermissions()
 
     class Config:
         from_attributes = True

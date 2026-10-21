@@ -8,6 +8,7 @@ from app.models.project import Project
 from app.models.user import User
 from app.core.dependencies import get_current_user
 from app.services import storage
+from app.services.social import project_access
 
 router = APIRouter(prefix="/projects", tags=["Project Media"])
 
@@ -43,7 +44,7 @@ def upload_project_media(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if project.owner_id != current_user.id:
+    if not project_access(db, project, current_user.id)["files"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
     cover_ext = _checked_ext(cover_image, "cover") if cover_image else None

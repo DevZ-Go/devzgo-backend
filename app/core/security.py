@@ -23,3 +23,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def issue_token(user) -> str:
+    """Login token; `ver` ties it to the current password so changing it signs out other sessions."""
+    return create_access_token({"sub": str(user.id), "ver": user.token_version or 0})

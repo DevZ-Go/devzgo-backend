@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -19,3 +19,5 @@ class Notification(Base):
 
     recipient = relationship("User", foreign_keys=[recipient_id], back_populates="notifications_received")
     actor = relationship("User", foreign_keys=[actor_id])
+
+    __table_args__ = (Index("ix_notifications_recipient_created", "recipient_id", created_at.desc()),)

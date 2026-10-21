@@ -10,13 +10,13 @@ def _project(client, headers, visibility="Public"):
 
 
 def test_private_projects_hidden_from_feed_and_collaborators(client, make_user):
-    owner, _ = make_user()
+    owner, owner_id = make_user()
     other, _ = make_user()
     private_id = _project(client, owner, "Private")
     public_id = _project(client, owner, "Public")
 
     def feed_ids(headers=None):
-        return {a["project"]["id"] for a in client.get("/network/feed", headers=headers).json() if a["project"]}
+        return {a["project"]["id"] for a in client.get(f"/network/feed?user_id={owner_id}", headers=headers).json()["items"] if a["project"]}
 
     assert private_id not in feed_ids(other) and private_id not in feed_ids()
     assert public_id in feed_ids(other)
@@ -76,11 +76,11 @@ def test_like_double_click_is_safe_and_notifies_once(client, make_user):
 
 
 def test_duplicate_username_and_case_insensitive_email(client, make_user):
-    payload = {"username": "dupname", "email": "Dup@Example.com", "password": "password123"}
+    payload = {"username": "dupname", "email": "Dup@Example.com", "password": "Password1!"}
     assert client.post("/auth/register", json=payload).status_code == 200
-    assert client.post("/auth/register", json={**payload, "email": "x@example.com"}).status_code == 400
-    assert client.post("/auth/register", json={**payload, "username": "other1", "email": "dup@example.com"}).status_code == 400
-    assert client.post("/auth/login", data={"username": "DUP@example.com", "password": "password123"}).status_code == 200
+    assert client.post("/auth/register", json={**payload, "email": "x@example.com"}).status_code == 409
+    assert client.post("/auth/register", json={**payload, "username": "other1", "email": "dup@example.com"}).status_code == 409
+    assert client.post("/auth/login", data={"username": "DUP@example.com", "password": "Password1!"}).status_code == 200
 
 
 def test_conversations_and_pagination(client, make_user):
@@ -155,12 +155,12 @@ def test_password_reset_flow(client, make_user, monkeypatch):
     assert len(sent) == 1  # second request inside a minute is ignored
 
     token = sent[0].split("token=")[1]
-    assert client.post("/auth/reset-password", json={"token": "x" * 20, "new_password": "newpassword1"}).status_code == 400
+    assert client.post("/auth/reset-password", json={"token": "x" * 20, "new_password": "NewPassword1!"}).status_code == 400
     assert client.post("/auth/reset-password", json={"token": token, "new_password": "short"}).status_code == 422
-    assert client.post("/auth/reset-password", json={"token": token, "new_password": "newpassword1"}).status_code == 200
-    assert client.post("/auth/reset-password", json={"token": token, "new_password": "another123"}).status_code == 400
-    assert client.post("/auth/login", data={"username": email, "password": "newpassword1"}).status_code == 200
-    assert client.post("/auth/login", data={"username": email, "password": "password123"}).status_code == 401
+    assert client.post("/auth/reset-password", json={"token": token, "new_password": "NewPassword1!"}).status_code == 200
+    assert client.post("/auth/reset-password", json={"token": token, "new_password": "Another1!"}).status_code == 400
+    assert client.post("/auth/login", data={"username": email, "password": "NewPassword1!"}).status_code == 200
+    assert client.post("/auth/login", data={"username": email, "password": "Password1!"}).status_code == 401
 
 
 def test_expired_reset_token_rejected(client, make_user):
@@ -174,7 +174,7 @@ def test_expired_reset_token_rejected(client, make_user):
         db.add(PasswordResetToken(user_id=user_id, token_hash=hashlib.sha256(b"expired-token-123").hexdigest(),
                                   expires_at=datetime.now(timezone.utc) - timedelta(minutes=1)))
         db.commit()
-    assert client.post("/auth/reset-password", json={"token": "expired-token-123", "new_password": "newpassword1"}).status_code == 400
+    assert client.post("/auth/reset-password", json={"token": "expired-token-123", "new_password": "NewPassword1!"}).status_code == 400
 
 
 def _github_login(client, monkeypatch, identity):
@@ -193,11 +193,20 @@ def _github_login(client, monkeypatch, identity):
 def test_github_login_creates_then_reuses_account(client, monkeypatch):
     identity = {"id": "9001", "login": "octo cat", "name": "Octo", "avatar_url": "https://a/x.png",
                 "html_url": "https://github.com/octocat", "email": "Octo@Example.com"}
+    from urllib.parse import parse_qs
+
     first = _github_login(client, monkeypatch, identity)
-    assert "/auth/callback#token=" in first
-    headers = {"Authorization": "Bearer " + first.split("#token=")[1]}
+    assert "/auth/github/onboarding#" in first
+    fragment = {k: v[0] for k, v in parse_qs(first.split("#", 1)[1]).items()}
+    assert fragment["suggested"] == "octocat"
+    assert client.get("/auth/me", headers={"Authorization": "Bearer " + fragment["token"]}).status_code == 401
+    assert client.post("/auth/github/complete", json={"onboarding_token": "x" * 20, "username": "octo"}).status_code == 400
+    done = client.post("/auth/github/complete", json={"onboarding_token": fragment["token"], "username": "Octo.Dev"})
+    assert done.status_code == 200, done.text
+    headers = {"Authorization": "Bearer " + done.json()["access_token"]}
     me = client.get("/profiles/me", headers=headers).json()
-    assert me["username"] == "octocat" and me["github_url"] == "https://github.com/octocat" and me["email"] == "octo@example.com"
+    assert me["username"] == "octo.dev" and me["github_url"] == "https://github.com/octocat" and me["email"] == "octo@example.com"
+    assert client.get("/auth/me", headers=headers).json()["has_password"] is False
     assert client.post("/auth/login", data={"username": "octo@example.com", "password": "anything1"}).status_code == 401
 
     again = _github_login(client, monkeypatch, {**identity, "email": None})

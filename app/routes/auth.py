@@ -4,16 +4,20 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from html import escape
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.schemas.user import ForgotPasswordRequest, ResetPasswordRequest, UserCreate, UserResponse
+from app.schemas.user import (
+    ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, UserCreate, UserResponse, UsernameAvailability,
+)
 from app.db.session import get_db
 from app.models.user import User
 from app.models.password_reset import PasswordResetToken
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.policy import normalize_username, username_problem
+from app.core.security import hash_password, verify_password, issue_token
 from app.core.dependencies import get_current_user
 from app.services.email import send_email
 
@@ -27,24 +31,48 @@ def _sha256(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def username_taken(db: Session, username: str) -> bool:
+    return db.query(User.id).filter(func.lower(User.username) == username.lower()).first() is not None
+
+
+def save_new_user(db: Session, user: User) -> User:
+    """Insert, turning a uniqueness race into the same 409 the pre-checks give."""
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Username or email already taken")
+    db.refresh(user)
+    return user
+
+
+@router.get("/username-available", response_model=UsernameAvailability)
+def username_available(username: str = Query(max_length=64), db: Session = Depends(get_db)):
+    name = normalize_username(username)
+    reason = username_problem(name) or ("taken" if username_taken(db, name) else None)
+    return {"username": name, "available": reason is None, "reason": reason}
+
+
 @router.post("/register", response_model=UserResponse)
 def register(user_data: UserCreate, db: Session = Depends(get_db)):
     email = user_data.email.strip().lower()
     if db.query(User.id).filter(func.lower(User.email) == email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-    if db.query(User.id).filter(func.lower(User.username) == user_data.username.lower()).first():
-        raise HTTPException(status_code=400, detail="Username already taken")
+        raise HTTPException(status_code=409, detail="Email already registered")
+    if username_taken(db, user_data.username):
+        raise HTTPException(status_code=409, detail="Username already taken")
+    return save_new_user(db, User(username=user_data.username, email=email, password_hash=hash_password(user_data.password)))
 
-    new_user = User(
-        username=user_data.username,
-        email=email,
-        password_hash=hash_password(user_data.password)
-    )
-    db.add(new_user)
+
+@router.post("/change-password")
+def change_password(data: ChangePasswordRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Change the password, or set a first one for a GitHub-only account. Other sessions are signed out."""
+    if user.password_hash and not verify_password(data.current_password or "", user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    user.password_hash = hash_password(data.new_password)
+    user.token_version = (user.token_version or 0) + 1
     db.commit()
-    db.refresh(new_user)
-    
-    return new_user
+    return {"message": "Password updated.", "access_token": issue_token(user), "token_type": "bearer"}
 
 
 @router.post("/login")
@@ -57,12 +85,7 @@ def login(
     if not user or not user.password_hash or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    access_token = create_access_token(data={"sub": str(user.id)})
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer"
-    }
+    return {"access_token": issue_token(user), "token_type": "bearer"}
 
 
 @router.post("/forgot-password")
@@ -107,6 +130,7 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
 
     user = db.query(User).filter(User.id == record.user_id).first()
     user.password_hash = hash_password(data.new_password)
+    user.token_version = (user.token_version or 0) + 1
     # Using one link retires every other outstanding link for this account.
     db.query(PasswordResetToken).filter(
         PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)

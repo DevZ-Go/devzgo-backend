@@ -23,46 +23,26 @@ http_bearer = HTTPBearer()
 http_bearer_optional = HTTPBearer(auto_error=False)
 
 
+def user_from_token(db: Session, token: str | None) -> User | None:
+    """The user of a valid login token, else None. Tokens issued before the last password change are rejected."""
+    try:
+        payload = jwt.decode(token or "", SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return None
+    if not payload.get("sub") or payload.get("purpose"):  # purpose tokens (OAuth state, onboarding) never log in
+        return None
+    user = db.query(User).filter(User.id == payload["sub"]).first()
+    return user if user and payload.get("ver", 0) == (user.token_version or 0) else None
+
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
     db: Session = Depends(get_db),
 ):
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-
-        if user_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-            )
-
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-        )
-
-    user = db.query(User).filter(User.id == user_id).first()
-
+    user = user_from_token(db, credentials.credentials)
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
-
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
     return user
-
-
-def user_id_from_token(token: str | None) -> str | None:
-    """The user id (`sub`) of a valid JWT, else None."""
-    if not token:
-        return None
-    try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM]).get("sub")
-    except JWTError:
-        return None
 
 
 def get_current_user_optional(
@@ -70,14 +50,4 @@ def get_current_user_optional(
     db: Session = Depends(get_db),
 ):
     """Same as get_current_user but returns None if no/invalid token (for optional auth routes)."""
-    if credentials is None:
-        return None
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str | None = payload.get("sub")
-        if user_id is None:
-            return None
-    except JWTError:
-        return None
-    return db.query(User).filter(User.id == user_id).first()
+    return user_from_token(db, credentials.credentials) if credentials else None
