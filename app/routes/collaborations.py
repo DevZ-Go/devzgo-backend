@@ -14,15 +14,24 @@ from app.core.dependencies import get_current_user, get_current_user_optional
 from app.core.errors import Conflict
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
-from app.models.collaboration import PERMISSIONS, CollaborationRequest, ProjectCollaborator, ProjectInvitation
+from app.models.collaboration import (
+    PERMISSIONS,
+    CollaborationRequest,
+    ProjectCollaborator,
+    ProjectInvitation,
+    apply_access,
+    level_can_comment,
+)
 from app.models.network import NetworkActivity
 from app.models.project import Project
 from app.models.user import User
 from app.realtime.broadcaster import queue_event
 from app.schemas.network import (
+    AccessUpdate,
     CollabPermissions,
     CollaborationRequestCreate,
     CollaborationRequestResponse,
+    FocusUpdate,
     InvitationCreate,
     InvitationResponse,
     InviteeResult,
@@ -40,17 +49,33 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def _project(db: Session, project_id: UUID, me: Optional[User], owner_only: bool = False) -> Project:
+def _project(db: Session, project_id: UUID, me: Optional[User], owner_only: bool = False, team: bool = False) -> Project:
+    """owner_only: just the owner. team: the owner or a member with manager access."""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project or not can_view_project(db, project, me.id if me else None):
         raise HTTPException(status_code=404, detail="Project not found")
     if owner_only and project.owner_id != me.id:
         raise HTTPException(status_code=403, detail="Only the project owner can do this")
+    if team and not _manages_team(db, project, me):
+        raise HTTPException(status_code=403, detail="Only the owner or a manager can do this")
     return project
 
 
 def _member(db: Session, project_id: UUID, user_id: UUID) -> Optional[ProjectCollaborator]:
     return db.query(ProjectCollaborator).filter_by(project_id=project_id, user_id=user_id).first()
+
+
+def _manages_team(db: Session, project: Project, me: User) -> bool:
+    if project.owner_id == me.id:
+        return True
+    member = _member(db, project.id, me.id)
+    return member is not None and member.access == "manager"
+
+
+def _grantable(project: Project, me: User, access: str) -> str:
+    if access == "manager" and project.owner_id != me.id:
+        raise HTTPException(status_code=403, detail="Only the owner can make someone a manager")
+    return access
 
 
 def _pending_request(db: Session, project_id: UUID, user_id: UUID) -> Optional[CollaborationRequest]:
@@ -65,15 +90,20 @@ def _live_invitation(db: Session, project_id: UUID, user_id: UUID) -> Optional[P
     return _live_invitations(db).filter_by(project_id=project_id, invitee_id=user_id).first()
 
 
+OWNER_PERMISSIONS = CollabPermissions(**{k: True for k in PERMISSIONS}, can_comment=True, can_manage_team=True)
+
+
 def _perms(row) -> CollabPermissions:
-    return CollabPermissions(**{k: getattr(row, k) for k in PERMISSIONS})
+    return CollabPermissions(**{k: getattr(row, k) for k in PERMISSIONS},
+                             can_comment=level_can_comment(row.access), can_manage_team=row.access == "manager")
 
 
 def _member_view(c: ProjectCollaborator) -> ProjectCollaboratorResponse:
     s = user_summary(c.user)
     return ProjectCollaboratorResponse(id=c.id, project_id=c.project_id, user_id=c.user_id, username=s.username,
                                        full_name=s.full_name, headline=s.headline, avatar_url=s.avatar_url,
-                                       role=c.role, created_at=c.created_at, permissions=_perms(c))
+                                       role=c.role, created_at=c.created_at, access=c.access, focus=c.focus,
+                                       permissions=_perms(c))
 
 
 def _request_view(r: CollaborationRequest) -> CollaborationRequestResponse:
@@ -86,7 +116,7 @@ def _request_view(r: CollaborationRequest) -> CollaborationRequestResponse:
 def _invitation_view(i: ProjectInvitation) -> InvitationResponse:
     return InvitationResponse(id=i.id, project_id=i.project_id, project_title=i.project.title,
                               inviter=user_summary(i.inviter), invitee=user_summary(i.invitee), role=i.role,
-                              message=i.message, permissions=_perms(i), status=i.status,
+                              message=i.message, access=i.access, permissions=_perms(i), status=i.status,
                               created_at=i.created_at, expires_at=i.expires_at)
 
 
@@ -95,10 +125,11 @@ def _changed(db: Session, project_id: UUID, *user_ids: UUID) -> None:
         queue_event(db, uid, {"type": "collab.changed", "project_id": str(project_id)})
 
 
-def _join(db: Session, project: Project, user: User, role: str, perms: CollabPermissions, owner: User) -> ProjectCollaborator:
+def _join(db: Session, project: Project, user: User, role: str, access: str, owner: User) -> ProjectCollaborator:
     collab = _member(db, project.id, user.id)
     if collab is None:
-        collab = ProjectCollaborator(project_id=project.id, user_id=user.id, role=role or "Collaborator", **perms.model_dump())
+        collab = ProjectCollaborator(project_id=project.id, user_id=user.id, role=role or "Collaborator")
+        apply_access(collab, access)
         db.add(collab)
         db.add(NetworkActivity(user_id=user.id, activity_type="collaboration", project_id=project.id, is_demo=False,
                                title=f"{display_name(user)} joined as {collab.role}"[:255],
@@ -125,7 +156,7 @@ def get_project_collaborators(project_id: UUID, db: Session = Depends(get_db),
     lead = ProjectCollaboratorResponse(id=project.id, project_id=project.id, user_id=project.owner_id, username=owner.username,
                                        full_name=owner.full_name, headline=owner.headline, avatar_url=owner.avatar_url,
                                        role="Project Creator / Lead", created_at=project.created_at, is_owner=True,
-                                       permissions=CollabPermissions(**{k: True for k in PERMISSIONS}))
+                                       access="owner", focus=project.owner_focus, permissions=OWNER_PERMISSIONS)
     members = db.query(ProjectCollaborator).filter_by(project_id=project_id).order_by(ProjectCollaborator.created_at).all()
     return [lead] + [_member_view(c) for c in members]
 
@@ -137,11 +168,12 @@ def my_collaboration_status(project_id: UUID, db: Session = Depends(get_db), me:
     if not project or not (invitation or can_view_project(db, project, me.id)):
         raise HTTPException(status_code=404, detail="Project not found")
     if project.owner_id == me.id:
-        return MyCollabStatus(status="owner", permissions=CollabPermissions(**{k: True for k in PERMISSIONS}))
+        return MyCollabStatus(status="owner", access="owner", focus=project.owner_focus, permissions=OWNER_PERMISSIONS)
     if member := _member(db, project_id, me.id):
-        return MyCollabStatus(status="member", permissions=_perms(member))
+        return MyCollabStatus(status="member", access=member.access, focus=member.focus, permissions=_perms(member))
     if invitation:
-        return MyCollabStatus(status="invited", invitation_id=invitation.id, permissions=_perms(invitation))
+        return MyCollabStatus(status="invited", invitation_id=invitation.id, access=invitation.access,
+                              permissions=_perms(invitation))
     if request := _pending_request(db, project_id, me.id):
         return MyCollabStatus(status="requested", request_id=request.id)
     return MyCollabStatus(status="none")
@@ -150,7 +182,7 @@ def my_collaboration_status(project_id: UUID, db: Session = Depends(get_db), me:
 # ---------------- join requests ----------------
 @router.get("/projects/{project_id}/requests", response_model=List[CollaborationRequestResponse])
 def get_project_collaboration_requests(project_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
-    _project(db, project_id, me, owner_only=True)
+    _project(db, project_id, me, team=True)
     rows = db.query(CollaborationRequest).filter_by(project_id=project_id, status="pending").order_by(CollaborationRequest.created_at).all()
     return [_request_view(r) for r in rows]
 
@@ -196,21 +228,25 @@ def _owners_pending_request(db: Session, request_id: UUID, me: User) -> Collabor
     req = db.query(CollaborationRequest).filter(CollaborationRequest.id == request_id).first()
     if not req:
         raise HTTPException(status_code=404, detail="Collaboration request not found")
-    if req.project_owner_id != me.id:
-        raise HTTPException(status_code=403, detail="Only the project owner can answer collaboration requests")
+    if not _manages_team(db, req.project, me):
+        raise HTTPException(status_code=403, detail="Only the owner or a manager can answer collaboration requests")
     if req.status != "pending":
         raise HTTPException(status_code=400, detail="This request is no longer pending")
     return req
 
 
 @router.put("/requests/{request_id}/accept", response_model=ProjectCollaboratorResponse)
-def accept_collaboration_request(request_id: UUID, permissions: Optional[CollabPermissions] = Body(None),
+def accept_collaboration_request(request_id: UUID, data: Optional[AccessUpdate] = Body(None),
                                  db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     req = _owners_pending_request(db, request_id, me)
+    access = _grantable(req.project, me, (data or AccessUpdate()).access)
     req.status = "accepted"
-    collab = _join(db, req.project, req.requester, req.role, permissions or CollabPermissions(), me)
+    collab = _join(db, req.project, req.requester, req.role, access, req.project.owner)
     notify(db, req.requester_id, me, "collaboration_accepted", str(req.project_id),
            f"{display_name(me)} accepted your collaboration request on \"{req.project.title}\"!")
+    if req.project.owner_id != me.id:
+        notify(db, req.project.owner_id, me, "collaboration_joined", str(req.project_id),
+               f"{display_name(me)} added {display_name(req.requester)} to \"{req.project.title}\".")
     db.commit()
     db.refresh(collab)
     return _member_view(collab)
@@ -220,7 +256,7 @@ def accept_collaboration_request(request_id: UUID, permissions: Optional[CollabP
 def decline_collaboration_request(request_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     req = _owners_pending_request(db, request_id, me)
     req.status = "declined"
-    _changed(db, req.project_id, req.requester_id)
+    _changed(db, req.project_id, req.requester_id, req.project_owner_id)
     db.commit()
     return {"message": "Collaboration request declined"}
 
@@ -240,7 +276,7 @@ def withdraw_collaboration_request(request_id: UUID, db: Session = Depends(get_d
 @router.get("/projects/{project_id}/invitee-search", response_model=List[InviteeResult])
 def search_invitees(project_id: UUID, q: str = Query(..., min_length=1, max_length=30), db: Session = Depends(get_db),
                     me: User = Depends(get_current_user)):
-    project = _project(db, project_id, me, owner_only=True)
+    project = _project(db, project_id, me, team=True)
     users = db.query(User).filter(func.lower(User.username).startswith(q.strip().lower(), autoescape=True),
                                   User.id != project.owner_id).order_by(User.username).limit(10).all()
     ids = [u.id for u in users]
@@ -255,11 +291,12 @@ def search_invitees(project_id: UUID, q: str = Query(..., min_length=1, max_leng
 
 @router.post("/projects/{project_id}/invitations", response_model=InvitationResponse, dependencies=[rate_limit("collab", 20, 60)])
 def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
-    project = _project(db, project_id, me, owner_only=True)
+    project = _project(db, project_id, me, team=True)
+    access = _grantable(project, me, data.access)
     invitee = db.query(User).filter(func.lower(User.username) == data.username.strip().lower()).first()
     if not invitee:
         raise HTTPException(status_code=404, detail="No developer with that username")
-    if invitee.id == me.id:
+    if invitee.id in (me.id, project.owner_id):
         raise HTTPException(status_code=400, detail="You cannot invite yourself")
     if not may_invite(db, me.id, invitee):
         raise HTTPException(status_code=403, detail="This person is not accepting collaboration invites")
@@ -274,7 +311,8 @@ def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = 
     db.query(ProjectInvitation).filter(ProjectInvitation.project_id == project_id, ProjectInvitation.invitee_id == invitee.id,
                                        ProjectInvitation.status == "pending").update({"status": "expired"})
     inv = ProjectInvitation(project_id=project_id, inviter_id=me.id, invitee_id=invitee.id, role=data.role,
-                            message=data.message, expires_at=_now() + INVITE_TTL, **data.permissions.model_dump())
+                            message=data.message, expires_at=_now() + INVITE_TTL)
+    apply_access(inv, access)
     db.add(inv)
     notify(db, invitee.id, me, "collaboration_invitation", str(project_id),
            f"{display_name(me)} invited you to collaborate on \"{project.title}\" as {data.role}.")
@@ -285,7 +323,7 @@ def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = 
 
 @router.get("/projects/{project_id}/invitations", response_model=List[InvitationResponse])
 def project_invitations(project_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
-    _project(db, project_id, me, owner_only=True)
+    _project(db, project_id, me, team=True)
     return [_invitation_view(i) for i in _live_invitations(db).filter_by(project_id=project_id).order_by(ProjectInvitation.created_at)]
 
 
@@ -298,7 +336,7 @@ def _answer(db: Session, invitation_id: UUID, me: User, status: str) -> ProjectI
     inv = db.query(ProjectInvitation).filter(ProjectInvitation.id == invitation_id).first()
     if not inv:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    is_owner = inv.project.owner_id == me.id
+    is_owner = _manages_team(db, inv.project, me)
     if (status == "revoked") != is_owner or (not is_owner and inv.invitee_id != me.id):
         raise HTTPException(status_code=403, detail="This is not your invitation to answer")
     if inv.status != "pending" or inv.expires_at <= _now():
@@ -310,7 +348,7 @@ def _answer(db: Session, invitation_id: UUID, me: User, status: str) -> ProjectI
 @router.put("/invitations/{invitation_id}/accept", response_model=ProjectCollaboratorResponse)
 def accept_invitation(invitation_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     inv = _answer(db, invitation_id, me, "accepted")
-    collab = _join(db, inv.project, me, inv.role, _perms(inv), inv.project.owner)
+    collab = _join(db, inv.project, me, inv.role, inv.access, inv.project.owner)
     notify(db, inv.project.owner_id, me, "collaboration_joined", str(inv.project_id),
            f"{display_name(me)} accepted your invitation to \"{inv.project.title}\".")
     db.commit()
@@ -368,12 +406,28 @@ def remove_member(project_id: UUID, user_id: UUID, db: Session = Depends(get_db)
     return {"message": "Member removed"}
 
 
+@router.patch("/projects/{project_id}/focus", response_model=FocusUpdate)
+def set_my_focus(project_id: UUID, data: FocusUpdate, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+    """The owner or a member says what they are working on; nobody else can write it."""
+    project = _project(db, project_id, me)
+    focus = (data.focus or "").strip() or None
+    if project.owner_id == me.id:
+        project.owner_focus = focus
+    elif member := _member(db, project_id, me.id):
+        member.focus = focus
+    else:
+        raise HTTPException(status_code=403, detail="Only the team can say what they are working on")
+    team = [project.owner_id] + [r[0] for r in db.query(ProjectCollaborator.user_id).filter_by(project_id=project_id)]
+    _changed(db, project_id, *team)
+    db.commit()
+    return FocusUpdate(focus=focus)
+
+
 @router.patch("/projects/{project_id}/members/{user_id}", response_model=ProjectCollaboratorResponse)
-def update_member_permissions(project_id: UUID, user_id: UUID, permissions: CollabPermissions,
-                              db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+def update_member_access(project_id: UUID, user_id: UUID, data: AccessUpdate,
+                         db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     _, member = _owners_member(db, project_id, user_id, me)
-    for key, value in permissions.model_dump().items():
-        setattr(member, key, value)
+    apply_access(member, data.access)
     _changed(db, project_id, user_id)
     db.commit()
     db.refresh(member)

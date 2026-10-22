@@ -37,9 +37,11 @@ class Project(Base):
 
     # Extended project analysis & collaboration fields
     github_url = Column(String, nullable=True)
-    github_commit_count = Column(Integer, nullable=True)  # repository total at the moment it was imported
-    github_push_count = Column(Integer, nullable=True)  # recent push events GitHub returned at import, at most 100
+    github_commit_count = Column(Integer, nullable=True)  # repository total at the last import or refresh
+    github_push_count = Column(Integer, nullable=True)  # push events stored for this repository
     github_pushed_at = Column(DateTime(timezone=True), nullable=True)
+    github_owner_id = Column(String(32), nullable=True)  # GitHub account of whoever imported or refreshed it
+    github_synced_at = Column(DateTime(timezone=True), nullable=True)
     analysis_summary = Column(Text, nullable=True)
     complexity = Column(String(32), nullable=True)  # Beginner, Intermediate, Advanced
     contribution_info = Column(Text, nullable=True)
@@ -50,6 +52,7 @@ class Project(Base):
     detected_tech_stack_ids = Column(JSONB, nullable=True)
 
     comments_enabled = Column(Boolean, nullable=False, server_default=true())
+    owner_focus = Column(String(200), nullable=True)  # what the owner says they are working on
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

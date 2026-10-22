@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.collaboration import ProjectCollaborator
+from app.models.collaboration import ProjectCollaborator, level_can_comment
 from app.models.connection import Connection
 from app.models.enums import ProjectVisibility
 from app.models.notification import Notification
@@ -120,10 +120,12 @@ def may_comment(db: Session, commenter_id: UUID, author_id: UUID) -> bool:
 
 
 def may_comment_on_project(db: Session, commenter_id: UUID, project: Project) -> bool:
+    """Members follow their access level (viewers only read); everyone else follows the owner's comment policy."""
     if commenter_id == project.owner_id:
         return True
-    if db.query(ProjectCollaborator.id).filter_by(project_id=project.id, user_id=commenter_id).first():
-        return True
+    member = db.query(ProjectCollaborator.access).filter_by(project_id=project.id, user_id=commenter_id).first()
+    if member:
+        return level_can_comment(member[0])
     return may_comment(db, commenter_id, project.owner_id)
 
 
@@ -177,13 +179,18 @@ def can_view_project(db: Session, project: Project, viewer_id: Optional[UUID]) -
 
 
 def project_access(db: Session, project: Project, user_id: Optional[UUID]) -> Dict[str, bool]:
-    """What one person may do with a project: the owner may do everything; members get view plus the flags the owner chose."""
+    """What one person may do with a project: the owner may do everything; members get what their access level allows."""
     if user_id is not None and project.owner_id == user_id:
-        return dict(owner=True, member=False, view=True, edit=True, files=True, secrets=True)
+        return dict(owner=True, member=False, view=True, edit=True, files=True, secrets=True, comment=True, manage_team=True)
     m = db.query(ProjectCollaborator).filter_by(project_id=project.id, user_id=user_id).first() if user_id else None
     open_public = project.visibility == ProjectVisibility.PUBLIC and profile_open_to(db, project.owner_id, user_id)
+    if m is not None:
+        comment = level_can_comment(m.access)
+    else:
+        comment = bool(user_id and open_public and may_comment(db, user_id, project.owner_id))
     return dict(owner=False, member=m is not None, view=m is not None or open_public,
-                edit=bool(m and m.can_edit_details), files=bool(m and m.can_manage_files), secrets=bool(m and m.can_view_secrets))
+                edit=bool(m and m.can_edit_details), files=bool(m and m.can_manage_files), secrets=bool(m and m.can_view_secrets),
+                comment=comment, manage_team=bool(m and m.access == "manager"))
 
 
 def project_stats(db: Session, project_ids, viewer_id: Optional[UUID]) -> Dict[UUID, dict]:

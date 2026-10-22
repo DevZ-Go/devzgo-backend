@@ -12,6 +12,7 @@ from app.models.connection import Connection
 from app.models.message import Message
 from app.models.chat import ChatRoom, ChatMember, RoomMessage
 from app.models.collaboration import CollaborationRequest, ProjectCollaborator, ProjectInvitation
+from app.models.github_history import ProjectCommit, ProjectContributor, ProjectPush
 from app.models.notification import Notification
 from app.models.project_like import ProjectLike
 from app.models.project_comment import ProjectComment
