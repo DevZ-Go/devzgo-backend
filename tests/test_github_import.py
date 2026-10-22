@@ -1,9 +1,14 @@
 import io
 import zipfile
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
+from uuid import UUID, uuid4
 
 import pytest
 
+from app.db.session import SessionLocal
+from app.models.user import User
+from app.services import github_history as history
 from app.services import github_import as gh
 
 
@@ -45,6 +50,8 @@ def fake_github(monkeypatch):
     monkeypatch.setattr(gh, "get_readme", lambda token, full: "# Title\n\n![badge](x.svg) A **great** [project](http://x).\n")
     monkeypatch.setattr(gh, "download_archive", archive)
     monkeypatch.setattr(gh, "repo_activity", lambda token, full: {"commits": 12, "pushes": 3})
+    monkeypatch.setattr(gh, "repo_by_name", lambda token, full: next((r for r in repos.values() if r["full_name"] == full), None))
+    monkeypatch.setattr(history, "fetch", lambda token, full: {"viewer": None, "stats": None, "commits": [], "pushes": []})
     return revoked
 
 
@@ -119,6 +126,89 @@ def test_import_creates_projects_matching_github_visibility(client, make_user, f
 
     for pid in (first["project_id"], private["project_id"], empty["project_id"]):
         client.delete(f"/projects/{pid}", headers=headers)
+
+
+def _history(owner_gid, mate_gid, mail, extra_push=False):
+    week = history._week(datetime(2026, 1, 6, tzinfo=timezone.utc))
+
+    def commit(sha, message, name, email, day, account=None):
+        return {"sha": sha * 40, "author": account,
+                "commit": {"message": message, "author": {"name": name, "email": email, "date": f"2026-01-{day:02d}T10:00:00Z"}}}
+
+    def push(event_id, gid, login, branch):
+        return {"id": event_id, "type": "PushEvent", "actor": {"id": int(gid), "login": login},
+                "payload": {"ref": f"refs/heads/{branch}", "size": 1}, "created_at": "2026-01-06T11:00:00Z"}
+
+    pushes = [push("1", owner_gid, "octo", "main"), push("2", owner_gid, "octo", "main"), push("3", mate_gid, "mate", "feature")]
+    return {
+        "viewer": owner_gid,
+        "stats": [
+            {"author": {"id": int(owner_gid), "login": "octo", "avatar_url": "https://avatars.example/1"},
+             "total": 8, "weeks": [{"w": week, "a": 50, "d": 5, "c": 8}]},
+            {"author": {"id": int(mate_gid), "login": "mate"}, "total": 4, "weeks": [{"w": week, "a": 10, "d": 1, "c": 4}]},
+        ],
+        "commits": [
+            commit("a", "Add login\n\nLonger body", "Octo", "octo@users.noreply.github.com", 6, {"id": int(owner_gid), "login": "octo"}),
+            commit("b", "Fix tests", "Mate", "mate@elsewhere.io", 7, {"id": int(mate_gid), "login": "mate"}),
+            commit("c", "Write docs", "Docs Person", mail, 8),
+            commit("d", "Polish docs", "Docs Person", mail, 9),
+        ],
+        "pushes": pushes + ([push("4", mate_gid, "mate", "feature")] if extra_push else []),
+    }, week
+
+
+def test_history_credits_each_person_and_refresh_adds_pushes(client, make_user, fake_github, monkeypatch):
+    owner, owner_id = make_user()
+    mate, mate_id = make_user()
+    writer, writer_id = make_user()
+    stranger, _ = make_user()
+    owner_gid, mate_gid = str(uuid4().int)[:9], str(uuid4().int)[:9]
+    mail = f"docs-{uuid4().hex[:8]}@example.com"
+    db = SessionLocal()
+    db.query(User).filter(User.id == UUID(mate_id)).update({"github_id": mate_gid})
+    db.query(User).filter(User.id == UUID(writer_id)).update({"email": mail})
+    db.commit()
+    db.close()
+
+    data, week = _history(owner_gid, mate_gid, mail)
+    monkeypatch.setattr(history, "fetch", lambda token, full: data)
+    session = _session(client, owner)["session"]
+    pid = client.post("/github/import/repos/1", headers=owner, json={"session": session}).json()["project_id"]
+
+    insights = client.get(f"/projects/{pid}/github", headers=stranger).json()
+    assert not insights["can_refresh"] and insights["totals"] == {"commits": 14, "pushes": 3, "contributors": 3}
+    people = {c["login"] or c["name"]: c for c in insights["contributors"]}
+    assert people["octo"]["user"]["id"] == owner_id and people["octo"]["pushes"] == 2 and people["octo"]["additions"] == 50
+    assert people["mate"]["user"]["id"] == mate_id and people["mate"]["pushes"] == 1
+    assert people["Docs Person"]["user"]["id"] == writer_id and people["Docs Person"]["commits"] == 2
+    assert "email" not in people["Docs Person"] and mail not in str(insights)
+    assert insights["commits"][0]["message"] == "Polish docs" and insights["weekly"] == [[week, 14]]
+
+    docs = client.get(f"/projects/{pid}/github/commits", params={"contributor": people["Docs Person"]["id"]}).json()
+    assert docs["total"] == 2 and {c["user"]["id"] for c in docs["items"]} == {writer_id}
+    assert client.get(f"/projects/{pid}/github/pushes", params={"contributor": people["mate"]["id"]}).json()["total"] == 1
+
+    def card(headers, user_id):
+        name = client.get("/auth/me", headers=headers).json()["username"]
+        found = client.get("/profiles/talent", headers=stranger, params={"q": name, "sort": "commits"}).json()
+        row = next(c for c in found if c["id"] == user_id)
+        return row["commits"], row["pushes"]
+
+    assert card(owner, owner_id) == (8, 2) and card(mate, mate_id) == (4, 1) and card(writer, writer_id) == (2, 0)
+
+    snapshot = client.get(f"/profiles/{mate_id}/snapshot", headers=stranger).json()
+    assert snapshot["commits"] == 4 and snapshot["weekly"] == [[week, 4]]
+    assert snapshot["contributions"] == [{"project_id": pid, "title": "shop-api", "owned": False, "commits": 4, "pushes": 1,
+                                          "share": round(4 / 14 * 100, 1)}]
+
+    more, _ = _history(owner_gid, mate_gid, mail, extra_push=True)
+    monkeypatch.setattr(history, "fetch", lambda token, full: more)
+    assert client.post(f"/projects/{pid}/github/refresh", headers=mate, json={"session": session}).status_code in (403, 410)
+    refreshed = client.post(f"/projects/{pid}/github/refresh", headers=owner, json={"session": session}).json()
+    assert refreshed["can_refresh"] and refreshed["totals"]["pushes"] == 4
+    client.post("/github/import/session/close", headers=owner, json={"session": session})
+    assert client.post(f"/projects/{pid}/github/refresh", headers=owner, json={"session": session}).status_code == 410
+    client.delete(f"/projects/{pid}", headers=owner)
 
 
 def test_category_and_readme_helpers():

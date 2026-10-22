@@ -6,6 +6,24 @@ from sqlalchemy.sql import func
 from app.db.session import Base
 
 PERMISSIONS = ("can_edit_details", "can_manage_files", "can_view_secrets")
+ACCESS_LEVELS = ("viewer", "commenter", "editor", "manager")
+_LEVEL_FLAGS = {
+    "viewer": (),
+    "commenter": (),
+    "editor": ("can_edit_details", "can_manage_files"),
+    "manager": ("can_edit_details", "can_manage_files", "can_view_secrets"),
+}
+
+
+def apply_access(row, level: str) -> None:
+    """Set an access level and the permission flags it implies on a member or an invitation."""
+    row.access = level
+    for flag in PERMISSIONS:
+        setattr(row, flag, flag in _LEVEL_FLAGS[level])
+
+
+def level_can_comment(level: str) -> bool:
+    return level != "viewer"
 
 class CollaborationRequest(Base):
     __tablename__ = "collaboration_requests"
@@ -41,6 +59,7 @@ class ProjectInvitation(Base):
     invitee_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(100), nullable=False)
     message = Column(Text, nullable=True)
+    access = Column(String(16), nullable=False, server_default="commenter")
     can_edit_details = Column(Boolean, nullable=False, server_default=false())
     can_manage_files = Column(Boolean, nullable=False, server_default=false())
     can_view_secrets = Column(Boolean, nullable=False, server_default=false())
@@ -66,6 +85,8 @@ class ProjectCollaborator(Base):
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(100), nullable=False)
+    access = Column(String(16), nullable=False, server_default="commenter")
+    focus = Column(String(200), nullable=True)  # what the member says they are working on
     can_edit_details = Column(Boolean, nullable=False, server_default=false())
     can_manage_files = Column(Boolean, nullable=False, server_default=false())
     can_view_secrets = Column(Boolean, nullable=False, server_default=false())

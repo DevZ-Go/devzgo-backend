@@ -149,6 +149,14 @@ def get_repo(token: str, repo_id: int) -> dict | None:
         return res.raise_for_status().json()
 
 
+def repo_by_name(token: str, full_name: str) -> dict | None:
+    with _client(token) as gh:
+        res = gh.get(f"/repos/{full_name}")
+        if res.status_code == 404:
+            return None
+        return res.raise_for_status().json()
+
+
 def repo_activity(token: str, full_name: str) -> dict:
     """Commit total and recent push events. Missing permission or an empty repo leaves the counts unset."""
     commits = pushes = None

@@ -130,6 +130,14 @@ class TechCount(BaseModel):
     name: str
     count: int
 
+class Contribution(BaseModel):
+    project_id: UUID
+    title: str
+    owned: bool
+    commits: int
+    pushes: int
+    share: float  # percent of the repository's commits
+
 class Standing(BaseModel):
     projects: int
     commits: int
@@ -139,6 +147,8 @@ class Standing(BaseModel):
     last_push: Optional[datetime] = None
     languages: List[LanguageShare] = []
     tech: List[TechCount] = []
+    contributions: List[Contribution] = []
+    weekly: List[List[int]] = []  # [week start as unix seconds, commits]
     top: Dict[str, int] = {}
 
 class TalentCard(BaseModel):
@@ -331,11 +341,15 @@ class RoomMessageResponse(BaseModel):
     is_outgoing: bool = False
 
 # ==================== COLLABORATIONS ====================
+AccessLevel = Literal["viewer", "commenter", "editor", "manager"]
+
 class CollabPermissions(BaseModel):
-    """Optional extras the owner grants a member; viewing the project is always included."""
+    """What a member's access level allows; viewing the project is always included."""
     can_edit_details: bool = False
     can_manage_files: bool = False
     can_view_secrets: bool = False
+    can_comment: bool = True
+    can_manage_team: bool = False
 
 class CollaborationRequestCreate(BaseModel):
     message: Optional[str] = Field(default=None, max_length=2000)
@@ -343,7 +357,13 @@ class CollaborationRequestCreate(BaseModel):
 
 class InvitationCreate(CollaborationRequestCreate):
     username: str = Field(min_length=1, max_length=30)
-    permissions: CollabPermissions = CollabPermissions()
+    access: AccessLevel = "commenter"
+
+class AccessUpdate(BaseModel):
+    access: AccessLevel = "commenter"
+
+class FocusUpdate(BaseModel):
+    focus: Optional[str] = Field(default=None, max_length=200)
 
 class InvitationResponse(BaseModel):
     id: UUID
@@ -353,6 +373,7 @@ class InvitationResponse(BaseModel):
     invitee: ConnectionUserSummary
     role: str
     message: Optional[str] = None
+    access: str = "commenter"
     permissions: CollabPermissions
     status: str
     created_at: datetime
@@ -365,6 +386,8 @@ class MyCollabStatus(BaseModel):
     status: Literal["owner", "member", "requested", "invited", "none"]
     request_id: Optional[UUID] = None
     invitation_id: Optional[UUID] = None
+    access: Optional[str] = None
+    focus: Optional[str] = None
     permissions: CollabPermissions = CollabPermissions()
 
 class CollaborationRequestResponse(BaseModel):
@@ -393,6 +416,8 @@ class ProjectCollaboratorResponse(BaseModel):
     role: str
     created_at: datetime
     is_owner: bool = False
+    access: str = "commenter"  # viewer, commenter, editor, manager, or owner
+    focus: Optional[str] = None
     permissions: CollabPermissions = CollabPermissions()
 
     class Config:

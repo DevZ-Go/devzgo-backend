@@ -29,6 +29,7 @@ from app.models.enums import ProjectVisibility
 from app.models.project import Project
 from app.models.user import User
 from app.routes.workspace_upload import install_workspace_zip
+from app.services import github_history as history
 from app.services import github_import as gh
 from app.services.skills import sync_skills_from_projects
 
@@ -170,6 +171,8 @@ def import_repo(repo_id: int, data: HandleRequest, db: Session = Depends(get_db)
     db.commit()
     db.refresh(project)
     project_id = project.id
+    if history.capture(db, project, token, repo["full_name"], activity["commits"]):
+        db.commit()
 
     code, detail, analysis = "analysed", None, None
     with tempfile.TemporaryDirectory(prefix="gh_import_") as tmp:

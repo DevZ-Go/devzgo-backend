@@ -2,8 +2,8 @@
 What a viewer is allowed to know about someone's work, used by profile lists and the recruiter board.
 
 Private projects, hidden connections, and hidden activity never affect a number someone else can see.
-Commit and push totals exist only for repositories imported from GitHub: the commit count is the
-repository's total at import time, and pushes are the recent push events GitHub returned then (at most 100).
+Commits and pushes come from repositories imported from GitHub, credited to each person who made them
+(see services.github_history). Projects imported before per-person history was kept credit the owner.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from app.models.network import NetworkActivity
 from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.user import User
+from app.services.github_history import credit
 from app.services.social import audience_open, profile_open_to, public_project_filter, visible_project_filter
 
 SORTS = ("projects", "commits", "pushes", "connections", "activity")
@@ -118,23 +119,53 @@ def _tech(projects: list[Project]) -> list[dict]:
     return [{"name": name, "count": count} for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
 
 
+def _github_projects(db: Session, project_filter) -> list[Project]:
+    return db.query(Project).filter(
+        project_filter,
+        or_(Project.github_url.isnot(None), Project.github_commit_count.isnot(None), Project.github_push_count.isnot(None)),
+    ).all()
+
+
+def _contributions(credited: dict, projects: dict[UUID, Project]) -> list[dict]:
+    rows = []
+    for project_id, per in credited.get("projects", {}).items():
+        project = projects.get(project_id)
+        if project is None:
+            continue
+        total = max(project.github_commit_count or 0, per["commits"])
+        rows.append({
+            "project_id": project_id,
+            "title": project.title,
+            "owned": False,
+            "commits": per["commits"],
+            "pushes": per["pushes"],
+            "share": round(per["commits"] / total * 100, 1) if total else 0,
+        })
+    rows.sort(key=lambda row: (row["commits"], row["pushes"]), reverse=True)
+    return rows
+
+
 def standing_for(db: Session, user: User, viewer_id: UUID | None) -> dict:
     """The graphic view. Numbers the viewer is not allowed to see come back empty rather than zero."""
     projects = projects_for(db, user.id, viewer_id)
-    commits = sum(p.github_commit_count or 0 for p in projects)
-    pushes = sum(p.github_push_count or 0 for p in projects)
-    last_push = max((p.github_pushed_at for p in projects if p.github_pushed_at), default=None)
+    imported = _github_projects(db, visible_project_filter(viewer_id))
+    mine = credit(db, imported).get(user.id, {})
+    contributions = _contributions(mine, {p.id: p for p in imported})
+    for row in contributions:
+        row["owned"] = any(p.id == row["project_id"] for p in projects)
     connections = _connection_count(db, user.id) if audience_open(db, user, viewer_id, "connection_visibility", "public") else None
     activity = _activity_count(db, user.id) if audience_open(db, user, viewer_id, "activity_visibility", "public") else None
     return {
         "projects": len(projects),
-        "commits": commits,
-        "pushes": pushes,
+        "commits": mine.get("commits", 0),
+        "pushes": mine.get("pushes", 0),
         "connections": connections,
         "activity": activity,
-        "last_push": last_push,
+        "last_push": mine.get("last_push"),
         "languages": _languages(projects),
         "tech": _tech(projects),
+        "contributions": contributions,
+        "weekly": sorted([week, count] for week, count in mine.get("weekly", {}).items()),
     }
 
 
@@ -172,6 +203,7 @@ def talent_board(db: Session, viewer_id: UUID | None, query: str, tech: list[str
     by_owner: dict[UUID, list[Project]] = defaultdict(list)
     for project in public:
         by_owner[project.owner_id].append(project)
+    credited = credit(db, [p for p in public if p.github_url or p.github_commit_count or p.github_push_count])
 
     users = db.query(User).options(selectinload(User.profile)).outerjoin(User.profile).filter(
         or_(UserProfile.discoverable.is_(None), UserProfile.discoverable.is_(True)),
@@ -191,7 +223,8 @@ def talent_board(db: Session, viewer_id: UUID | None, query: str, tech: list[str
         show_activity = audience_open(db, user, viewer_id, "activity_visibility", "public")
         connections = _connection_count(db, user.id) if show_connections else None
         activity = _activity_count(db, user.id) if show_activity else None
-        last_push: datetime | None = max((p.github_pushed_at for p in projects if p.github_pushed_at), default=None)
+        work = credited.get(user.id, {})
+        last_push: datetime | None = work.get("last_push")
         tech_names = sorted({stack.name for project in projects for stack in project.tech_stacks})
         cards.append({
             "id": user.id,
@@ -204,8 +237,8 @@ def talent_board(db: Session, viewer_id: UUID | None, query: str, tech: list[str
             "location": None if not open_profile else (profile.location if profile else None),
             "skills": None if not open_profile else (profile.skills if profile else None),
             "projects": 0 if not open_profile else len(projects),
-            "commits": 0 if not open_profile else sum(p.github_commit_count or 0 for p in projects),
-            "pushes": 0 if not open_profile else sum(p.github_push_count or 0 for p in projects),
+            "commits": 0 if not open_profile else work.get("commits", 0),
+            "pushes": 0 if not open_profile else work.get("pushes", 0),
             "connections": connections,
             "activity": activity,
             "last_push": None if not open_profile else last_push,

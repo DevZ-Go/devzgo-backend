@@ -106,7 +106,7 @@ class ProjectResponse(BaseModel):
     is_liked: bool = False
     comments_count: int = 0
     comments_enabled: bool = True
-    access: Optional[Dict[str, bool]] = None  # owner, member, view, edit, files, secrets for this viewer
+    access: Optional[Dict[str, bool]] = None  # owner, member, view, edit, files, secrets, comment, manage_team for this viewer
 
     class Config:
         from_attributes = True
