@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import BinaryIO
 
 ROOT = Path("storage")
+# A workspace can hold thousands of small files; one at a time that is minutes of round trips to the bucket.
+UPLOAD_WORKERS = 32
 
 
 def is_s3() -> bool:
@@ -37,7 +39,14 @@ def _client(public: bool = False):
         region_name=os.getenv("S3_REGION", "auto"),
         aws_access_key_id=os.getenv("S3_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY"),
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            max_pool_connections=UPLOAD_WORKERS * 2,
+            connect_timeout=10,
+            read_timeout=60,
+            retries={"max_attempts": 4, "mode": "standard"},
+        ),
     )
 
 
@@ -55,10 +64,18 @@ def save(key: str, fileobj: BinaryIO) -> None:
 
 def upload_dir(local_dir: Path, prefix: str = "") -> None:
     """Copy every regular file under local_dir to <prefix>/<relative path>."""
-    for path in local_dir.rglob("*"):
-        if path.is_file() and not path.is_symlink():
-            rel = path.relative_to(local_dir).as_posix()
-            _client().upload_file(str(path), _bucket(), f"{prefix}/{rel}" if prefix else rel)
+    from concurrent.futures import ThreadPoolExecutor
+
+    client, bucket = _client(), _bucket()
+    files = [p for p in local_dir.rglob("*") if p.is_file() and not p.is_symlink()]
+
+    def put(path: Path) -> None:
+        rel = path.relative_to(local_dir).as_posix()
+        client.upload_file(str(path), bucket, f"{prefix}/{rel}" if prefix else rel)
+
+    with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as pool:
+        # list() surfaces the first failed upload as an exception here.
+        list(pool.map(put, files))
 
 
 def read(key: str) -> bytes:

@@ -22,6 +22,22 @@ OS_JUNK_DIRS = frozenset({"__macosx"})
 OS_JUNK_NAMES = frozenset({".ds_store", "thumbs.db", "desktop.ini"})
 
 
+# Installed dependencies, caches and VCS data: often most of an archive's files, never the author's code.
+GENERATED_DIRS = frozenset(
+    {
+        "node_modules", "bower_components", ".git", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache",
+        "venv", ".venv", "site-packages", ".gradle", ".dart_tool", "pods", "deriveddata", "xcuserdata",
+        ".next", ".nuxt", ".turbo", ".cache", ".parcel-cache",
+    }
+)
+
+
+def is_generated(path: str) -> bool:
+    parts = [p.lower() for p in path.replace("\\", "/").split("/") if p]
+    folders = parts if path.endswith("/") else parts[:-1]
+    return any(p in GENERATED_DIRS for p in folders)
+
+
 def is_os_junk(path: str) -> bool:
     parts = [p.lower() for p in path.replace("\\", "/").split("/") if p]
     if not parts:
@@ -55,7 +71,7 @@ def safe_extract_zip(zip_path: Path, dest_dir: Path, skip_symlinks: bool = False
     with zf:
         for member in zf.infolist():
             raw_name = member.filename
-            if not raw_name or is_os_junk(raw_name):
+            if not raw_name or is_os_junk(raw_name) or is_generated(raw_name):
                 continue
 
             if is_zip_symlink(member):
