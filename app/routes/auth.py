@@ -12,13 +12,16 @@ from sqlalchemy.orm import Session
 
 from app.schemas.user import (
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, UserCreate, UserResponse, UsernameAvailability,
+    UsernameChangeRequest,
 )
 from app.db.session import get_db
 from app.models.user import User
+from app.models.profile import UserProfile
+from app.services.roles import ROLES, assign_identity
 from app.models.password_reset import PasswordResetToken
 from app.core.policy import normalize_username, username_problem
 from app.core.security import hash_password, verify_password, issue_token
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, get_current_user_optional
 from app.services.email import send_email
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -31,8 +34,11 @@ def _sha256(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def username_taken(db: Session, username: str) -> bool:
-    return db.query(User.id).filter(func.lower(User.username) == username.lower()).first() is not None
+def username_taken(db: Session, username: str, except_id=None) -> bool:
+    query = db.query(User.id).filter(func.lower(User.username) == username.lower())
+    if except_id is not None:
+        query = query.filter(User.id != except_id)
+    return query.first() is not None
 
 
 def save_new_user(db: Session, user: User) -> User:
@@ -48,9 +54,14 @@ def save_new_user(db: Session, user: User) -> User:
 
 
 @router.get("/username-available", response_model=UsernameAvailability)
-def username_available(username: str = Query(max_length=64), db: Session = Depends(get_db)):
+def username_available(
+    username: str = Query(max_length=64),
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
     name = normalize_username(username)
-    reason = username_problem(name) or ("taken" if username_taken(db, name) else None)
+    taken = username_taken(db, name, except_id=current_user.id if current_user else None)
+    reason = username_problem(name) or ("taken" if taken else None)
     return {"username": name, "available": reason is None, "reason": reason}
 
 
@@ -61,7 +72,21 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Email already registered")
     if username_taken(db, user_data.username):
         raise HTTPException(status_code=409, detail="Username already taken")
-    return save_new_user(db, User(username=user_data.username, email=email, password_hash=hash_password(user_data.password)))
+    if user_data.role is not None and user_data.role not in ROLES:
+        raise HTTPException(status_code=400, detail="Choose one of the listed roles")
+    if user_data.role == "Recruiter" and len(" ".join((user_data.company or "").split())) < 2:
+        raise HTTPException(status_code=400, detail="Add the company or agency you recruit for")
+    user = save_new_user(db, User(username=user_data.username, email=email, password_hash=hash_password(user_data.password)))
+    if user_data.role or user_data.company:
+        profile = UserProfile(user_id=user.id)
+        db.add(profile)
+        assign_identity(
+            profile, user_data.role, user_data.company,
+            company_sent=True, role_sent=user_data.role is not None,
+        )
+        user.profile = profile
+        db.commit()
+    return user
 
 
 @router.post("/change-password")
@@ -137,6 +162,20 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
     ).update({"used_at": now})
     db.commit()
     return {"message": "Password updated. You can sign in now."}
+
+
+@router.put("/username", response_model=UserResponse)
+def change_username(data: UsernameChangeRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if username_taken(db, data.username, except_id=user.id):
+        raise HTTPException(status_code=409, detail="Username already taken")
+    user.username = data.username
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Username already taken")
+    db.refresh(user)
+    return user
 
 
 @router.get("/me", response_model=UserResponse)

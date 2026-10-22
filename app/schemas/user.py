@@ -28,6 +28,8 @@ class UserCreate(BaseModel):
     username: Username
     email: EmailStr
     password: Password
+    role: Optional[str] = Field(default=None, max_length=40)
+    company: Optional[str] = Field(default=None, max_length=120)
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -47,11 +49,16 @@ class ChangePasswordRequest(BaseModel):
 class GitHubCompleteRequest(BaseModel):
     onboarding_token: str = Field(min_length=10, max_length=2000)
     username: Username
+    role: Optional[str] = Field(default=None, max_length=40)
+    company: Optional[str] = Field(default=None, max_length=120)
 
 class UsernameAvailability(BaseModel):
     username: str
     available: bool
     reason: Optional[str] = None  # invalid, reserved, taken
+
+class UsernameChangeRequest(BaseModel):
+    username: Username
 
 class UserResponse(BaseModel):
     id: UUID
@@ -59,6 +66,7 @@ class UserResponse(BaseModel):
     email: EmailStr
     created_at: datetime
     has_password: bool = True
+    username_needs_choice: bool = False
 
     class Config:
         from_attributes = True

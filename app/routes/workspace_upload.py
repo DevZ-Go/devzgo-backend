@@ -146,6 +146,12 @@ def apply_analysis_to_project(
     if not had_confirmed and linked:
         project.tech_stacks = linked
 
+    from app.models.user import User
+    from app.services.skills import sync_skills_from_projects
+    owner = db.query(User).filter(User.id == project.owner_id).first()
+    if owner:
+        sync_skills_from_projects(db, owner)
+
     return {
         "languages": result.languages,
         "detected_tech_stacks": linked_names,
@@ -178,15 +184,36 @@ def perform_workspace_zip_upload(
     if not project_access(db, project, current_user.id)["files"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
+    tmp_zip: Path | None = None
+    try:
+        tmp_zip = _stream_upload_to_temp(file, MAX_UPLOAD_BYTES)
+        return install_workspace_zip(db, project, tmp_zip)
+    finally:
+        file.file.close()
+        if tmp_zip is not None and tmp_zip.exists():
+            tmp_zip.unlink(missing_ok=True)
+
+
+def _lift_single_root(workspace_root: Path) -> None:
+    """Archives such as GitHub's wrap everything in one folder; move its contents up a level."""
+    entries = list(workspace_root.iterdir())
+    if len(entries) != 1 or not entries[0].is_dir():
+        return
+    wrapper = entries[0].rename(workspace_root / f".lift_{entries[0].name}")
+    for child in wrapper.iterdir():
+        child.rename(workspace_root / child.name)
+    wrapper.rmdir()
+
+
+def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_github: bool = False) -> dict:
+    """Replace the project's workspace with the archive, rebuild the files table, analyse, and commit."""
+    project_id = project.id
     in_bucket = storage.is_s3()
     workspace_root = (
         Path(tempfile.mkdtemp(prefix="workspace_")) / "w" if in_bucket else workspace_dir_for_project(project_id)
     )
-    tmp_zip: Path | None = None
 
     try:
-        tmp_zip = _stream_upload_to_temp(file, MAX_UPLOAD_BYTES)
-
         db.query(FileRecord).filter(FileRecord.project_id == project_id).delete(
             synchronize_session=False
         )
@@ -195,7 +222,9 @@ def perform_workspace_zip_upload(
             shutil.rmtree(workspace_root)
         workspace_root.mkdir(parents=True, exist_ok=True)
 
-        safe_extract_zip(tmp_zip, workspace_root)
+        safe_extract_zip(zip_path, workspace_root, skip_symlinks=from_github)
+        if from_github:
+            _lift_single_root(workspace_root)
 
         new_rows, total_files = build_file_records_from_workspace(
             project_id, workspace_root
@@ -208,7 +237,7 @@ def perform_workspace_zip_upload(
         if in_bucket:
             storage.delete_prefix(f"project_{project_id}/")
             storage.upload_dir(workspace_root, f"project_{project_id}")
-            with open(tmp_zip, "rb") as original:
+            with open(zip_path, "rb") as original:
                 storage.save(f"sources/{project_id}.zip", original)
 
         db.commit()
@@ -221,16 +250,10 @@ def perform_workspace_zip_upload(
             "languages": analysis["languages"],
             "applied_to_confirmed": analysis["applied_to_confirmed"],
         }
-    except HTTPException:
-        db.rollback()
-        raise
     except Exception:
         db.rollback()
         raise
     finally:
-        file.file.close()
-        if tmp_zip is not None and tmp_zip.exists():
-            tmp_zip.unlink(missing_ok=True)
         if in_bucket:
             shutil.rmtree(workspace_root.parent, ignore_errors=True)
 
@@ -243,6 +266,7 @@ __all__ = [
     "workspace_dir_for_project",
     "safe_extract_zip",
     "perform_workspace_zip_upload",
+    "install_workspace_zip",
     "apply_analysis_to_project",
     "build_file_records_from_workspace",
 ]

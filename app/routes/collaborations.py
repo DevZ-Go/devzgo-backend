@@ -29,7 +29,8 @@ from app.schemas.network import (
     MyCollabStatus,
     ProjectCollaboratorResponse,
 )
-from app.services.social import can_view_project, display_name, notify, user_summary
+from app.services.chat_rooms import drop_project_member, sync_project_room
+from app.services.social import can_view_project, display_name, may_invite, notify, user_summary
 
 router = APIRouter(prefix="/collaborations", tags=["Collaborations"])
 INVITE_TTL = timedelta(days=14)
@@ -102,6 +103,7 @@ def _join(db: Session, project: Project, user: User, role: str, perms: CollabPer
         db.add(NetworkActivity(user_id=user.id, activity_type="collaboration", project_id=project.id, is_demo=False,
                                title=f"{display_name(user)} joined as {collab.role}"[:255],
                                content=f"Excited to start collaborating with @{owner.username} on {project.title}!"))
+    sync_project_room(db, project)
     return collab
 
 
@@ -183,6 +185,13 @@ def my_pending_requests(db: Session = Depends(get_db), me: User = Depends(get_cu
     return [_request_view(r) for r in rows]
 
 
+@router.get("/requests/incoming", response_model=List[CollaborationRequestResponse])
+def incoming_requests(db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+    """People asking to join any of my projects."""
+    rows = db.query(CollaborationRequest).filter_by(project_owner_id=me.id, status="pending").order_by(CollaborationRequest.created_at.desc()).all()
+    return [_request_view(r) for r in rows]
+
+
 def _owners_pending_request(db: Session, request_id: UUID, me: User) -> CollaborationRequest:
     req = db.query(CollaborationRequest).filter(CollaborationRequest.id == request_id).first()
     if not req:
@@ -252,6 +261,8 @@ def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = 
         raise HTTPException(status_code=404, detail="No developer with that username")
     if invitee.id == me.id:
         raise HTTPException(status_code=400, detail="You cannot invite yourself")
+    if not may_invite(db, me.id, invitee):
+        raise HTTPException(status_code=403, detail="This person is not accepting collaboration invites")
     if _member(db, project_id, invitee.id):
         raise Conflict("already_member", "This developer is already a collaborator")
     if request := _pending_request(db, project_id, invitee.id):
@@ -332,6 +343,7 @@ def leave_project(project_id: UUID, db: Session = Depends(get_db), me: User = De
         raise HTTPException(status_code=400 if project.owner_id == me.id else 404,
                             detail="Owners cannot leave their own project" if project.owner_id == me.id else "You are not a member")
     db.delete(member)
+    drop_project_member(db, project_id, me.id)
     notify(db, project.owner_id, me, "collaboration_left", str(project_id), f"{display_name(me)} left \"{project.title}\".")
     db.commit()
     return {"message": "You left the project"}
@@ -349,6 +361,7 @@ def _owners_member(db: Session, project_id: UUID, user_id: UUID, me: User) -> tu
 def remove_member(project_id: UUID, user_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     project, member = _owners_member(db, project_id, user_id, me)
     db.delete(member)
+    drop_project_member(db, project_id, user_id)
     notify(db, user_id, me, "collaboration_removed", str(project_id),
            f"{display_name(me)} removed you from \"{project.title}\".")
     db.commit()

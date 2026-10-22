@@ -27,6 +27,12 @@ class User(Base):
     def has_password(self) -> bool:
         return self.password_hash is not None
 
+    @property
+    def username_needs_choice(self) -> bool:
+        """Accounts created before handles were required still have an email sitting in the username column."""
+        from app.core.policy import normalize_username, username_problem
+        return username_problem(normalize_username(self.username or "")) is not None
+
     # Projects owned by this user
     projects = relationship("Project", back_populates="owner")
 

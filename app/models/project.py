@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Boolean, Column, String, ForeignKey, DateTime, Enum, Table, Text, true
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Table, Text, true
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
@@ -37,6 +37,9 @@ class Project(Base):
 
     # Extended project analysis & collaboration fields
     github_url = Column(String, nullable=True)
+    github_commit_count = Column(Integer, nullable=True)  # repository total at the moment it was imported
+    github_push_count = Column(Integer, nullable=True)  # recent push events GitHub returned at import, at most 100
+    github_pushed_at = Column(DateTime(timezone=True), nullable=True)
     analysis_summary = Column(Text, nullable=True)
     complexity = Column(String(32), nullable=True)  # Beginner, Intermediate, Advanced
     contribution_info = Column(Text, nullable=True)

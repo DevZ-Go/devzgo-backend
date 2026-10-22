@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import desc
@@ -14,6 +14,11 @@ from app.schemas.network import NotificationResponse
 from app.services.social import display_name
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
+RECENT = timedelta(hours=48)
+
+
+def _recent():
+    return Notification.created_at >= datetime.now(timezone.utc) - RECENT
 
 def _format_notification(n: Notification) -> NotificationResponse:
     actor_name = display_name(n.actor)
@@ -41,7 +46,8 @@ def get_user_notifications(
     current_user: User = Depends(get_current_user),
 ):
     query = db.query(Notification).options(selectinload(Notification.actor).selectinload(User.profile)).filter(
-        Notification.recipient_id == current_user.id
+        Notification.recipient_id == current_user.id,
+        _recent(),
     )
     if before:
         query = query.filter(Notification.created_at < before)
@@ -86,5 +92,6 @@ def get_unread_notifications_count(
     count = db.query(Notification).filter(
         Notification.recipient_id == current_user.id,
         Notification.read == False,
+        _recent(),
     ).count()
     return {"unread_count": count}

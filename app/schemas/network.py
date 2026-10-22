@@ -1,6 +1,6 @@
 from uuid import UUID
 from pydantic import AfterValidator, BaseModel, Field
-from typing import Annotated, List, Literal, Optional
+from typing import Annotated, Dict, List, Literal, Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -33,6 +33,7 @@ ShortText = Annotated[Optional[str], Field(default=None, max_length=255)]
 class UserProfileBase(BaseModel):
     full_name: Optional[str] = None
     headline: Optional[str] = None
+    role: Optional[str] = None
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     github_url: Optional[str] = None
@@ -44,6 +45,8 @@ class UserProfileBase(BaseModel):
 class UserProfileUpdate(UserProfileBase):
     full_name: ShortText = None
     headline: ShortText = None
+    role: Optional[str] = Field(default=None, max_length=40)
+    company: Optional[str] = Field(default=None, max_length=120)
     bio: Optional[str] = Field(default=None, max_length=2000)
     avatar_url: Link = None
     github_url: Link = None
@@ -52,6 +55,22 @@ class UserProfileUpdate(UserProfileBase):
     skills: Optional[str] = Field(default=None, max_length=1000)
     location: ShortText = None
     timezone: Optional[TimeZone] = None
+    profile_visibility: Optional[Literal["public", "connections"]] = None
+    message_policy: Optional[Literal["anyone", "connections"]] = None
+    comment_policy: Optional[Literal["anyone", "connections"]] = None
+    activity_visibility: Optional[Literal["public", "connections"]] = None
+    discoverable: Optional[bool] = None
+    allow_connection_requests: Optional[bool] = None
+    connection_visibility: Optional[Literal["public", "connections", "private"]] = None
+    collaboration_policy: Optional[Literal["anyone", "connections", "none"]] = None
+    email_visibility: Optional[Literal["public", "connections", "private"]] = None
+    resume_visibility: Optional[Literal["public", "connections", "private"]] = None
+    notify_likes: Optional[bool] = None
+    notify_comments: Optional[bool] = None
+    notify_shares: Optional[bool] = None
+    notify_connections: Optional[bool] = None
+    notify_messages: Optional[bool] = None
+    notify_collaborations: Optional[bool] = None
 
 class UserProfileResponse(UserProfileBase):
     id: UUID
@@ -63,11 +82,82 @@ class UserProfileResponse(UserProfileBase):
     projects_count: int = 0
     connections_count: int = 0
     collaborations_count: int = 0
+    company: Optional[str] = None
+    guide_seen: Optional[bool] = None
     connection_status: Optional[str] = None  # None, "self", "pending_sent", "pending_received", "connected"
     connection_id: Optional[UUID] = None
+    restricted: bool = False
+    can_message: bool = True
+    accepts_connections: bool = True
+    profile_visibility: Optional[str] = None
+    message_policy: Optional[str] = None
+    comment_policy: Optional[str] = None
+    activity_visibility: Optional[str] = None
+    discoverable: Optional[bool] = None
+    allow_connection_requests: Optional[bool] = None
+    connection_visibility: Optional[str] = None
+    collaboration_policy: Optional[str] = None
+    email_visibility: Optional[str] = None
+    resume_url: Optional[str] = None
+    resume_visibility: Optional[str] = None
+    connections_visible: bool = True
+    notify_likes: Optional[bool] = None
+    notify_comments: Optional[bool] = None
+    notify_shares: Optional[bool] = None
+    notify_connections: Optional[bool] = None
+    notify_messages: Optional[bool] = None
+    notify_collaborations: Optional[bool] = None
 
     class Config:
         from_attributes = True
+
+class GroupMember(BaseModel):
+    username: str
+    role: str
+
+class CollabGroup(BaseModel):
+    project_id: UUID
+    title: str
+    visibility: str
+    role: str
+    members: List[GroupMember]
+
+class LanguageShare(BaseModel):
+    name: str
+    percentage: float
+
+class TechCount(BaseModel):
+    name: str
+    count: int
+
+class Standing(BaseModel):
+    projects: int
+    commits: int
+    pushes: int
+    connections: Optional[int] = None
+    activity: Optional[int] = None
+    last_push: Optional[datetime] = None
+    languages: List[LanguageShare] = []
+    tech: List[TechCount] = []
+    top: Dict[str, int] = {}
+
+class TalentCard(BaseModel):
+    id: UUID
+    username: str
+    full_name: Optional[str] = None
+    headline: Optional[str] = None
+    role: Optional[str] = None
+    company: Optional[str] = None
+    avatar_url: Optional[str] = None
+    location: Optional[str] = None
+    skills: Optional[str] = None
+    projects: int = 0
+    commits: int = 0
+    pushes: int = 0
+    connections: Optional[int] = None
+    activity: Optional[int] = None
+    last_push: Optional[datetime] = None
+    tech: List[str] = []
 
 # ==================== LIKES & COMMENTS ====================
 class ActivityCommentCreate(BaseModel):
@@ -209,6 +299,36 @@ class ConversationResponse(BaseModel):
     other_user: ConnectionUserSummary
     last_message: MessageResponse
     unread_count: int = 0
+
+
+class ChatRoomCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    member_ids: List[UUID] = Field(min_length=1, max_length=20)
+
+
+class ChatRoomSummary(BaseModel):
+    id: UUID
+    title: str
+    project_id: Optional[UUID] = None
+    member_count: int
+    unread_count: int = 0
+    last_message: Optional[str] = None
+    last_at: Optional[datetime] = None
+
+
+class RoomMessageCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
+
+
+class RoomMessageResponse(BaseModel):
+    id: UUID
+    room_id: UUID
+    sender_id: UUID
+    sender_username: str
+    sender_name: str
+    content: str
+    created_at: datetime
+    is_outgoing: bool = False
 
 # ==================== COLLABORATIONS ====================
 class CollabPermissions(BaseModel):
