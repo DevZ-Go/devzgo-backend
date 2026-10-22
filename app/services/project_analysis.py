@@ -245,10 +245,16 @@ HTML_URL = re.compile(r"""(?:src|href)\s*=\s*['"]([^'"]+)['"]""", re.I)
 K8S_KIND = re.compile(r"(?m)^kind:\s*(Deployment|Service|Ingress|StatefulSet|DaemonSet|Pod|ConfigMap)\b")
 
 
+EVIDENCE_PER_KIND = 3
+
+
 @dataclass
 class AnalysisResult:
     languages: list[dict] = field(default_factory=list)
     tech_names: list[str] = field(default_factory=list)
+    # Why each tech was detected: {"React": [{"kind": "dependency", "file": "package.json"}, ...]}.
+    # kind is extension, dependency, config or import; a few files per kind, paths relative to the workspace.
+    evidence: dict[str, list[dict]] = field(default_factory=dict)
 
 
 def _should_skip_dir(name: str) -> bool:
@@ -483,16 +489,24 @@ def _techs_from_source(path: Path) -> set[str]:
 
 
 def analyze_workspace(workspace_root: Path) -> AnalysisResult:
-    """Full analysis: language percentages + merged tech names."""
-    files = list(_iter_source_files(workspace_root.resolve()))
-    techs = _techs_from_extensions(files)
+    """Full analysis: language percentages, merged tech names and the files behind each tech."""
+    root = workspace_root.resolve()
+    files = list(_iter_source_files(root))
+    evidence: dict[str, list[dict]] = {}
+
+    def note(techs: set[str], kind: str, path: Path) -> None:
+        for tech in techs:
+            rows = evidence.setdefault(_canon(tech), [])
+            if sum(r["kind"] == kind for r in rows) < EVIDENCE_PER_KIND:
+                rows.append({"kind": kind, "file": path.relative_to(root).as_posix()})
+
     for i, path in enumerate(files):
-        techs |= _techs_from_manifest(path)
-        techs |= _techs_from_markers(path)
+        note(_techs_from_extensions([path]), "extension", path)
+        note(_techs_from_manifest(path), "dependency", path)
+        note(_techs_from_markers(path), "config", path)
         if i < SCANNED_SOURCE_LIMIT:
-            techs |= _techs_from_source(path)
-    names = sorted({_canon(t) for t in techs})
-    return AnalysisResult(languages=analyze_languages(workspace_root, files), tech_names=names)
+            note(_techs_from_source(path), "import", path)
+    return AnalysisResult(languages=analyze_languages(root, files), tech_names=sorted(evidence), evidence=evidence)
 
 
 def resolve_tech_stacks_from_names(db, names: list[str]):
