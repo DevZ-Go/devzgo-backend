@@ -9,6 +9,7 @@ Commits and pushes come from repositories imported from GitHub, credited to each
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models.collaboration import ProjectCollaborator
 from app.models.connection import Connection
+from app.models.file import File as FileRecord
 from app.models.network import NetworkActivity
 from app.models.profile import UserProfile
 from app.models.project import Project
@@ -24,7 +26,8 @@ from app.models.user import User
 from app.services.github_history import credit
 from app.services.social import audience_open, profile_open_to, public_project_filter, visible_project_filter
 
-SORTS = ("projects", "commits", "pushes", "connections", "activity")
+METRICS = ("projects", "commits", "pushes", "connections", "activity")
+SORTS = ("relevance", "projects", "commits", "pushes", "recent", "connections", "activity")
 _NO_PUSH = datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -230,31 +233,61 @@ def standing_for(db: Session, user: User, viewer_id: UUID | None) -> dict:
     }
 
 
-def _matches_tech(user: User, projects: list[Project], needed: list[str]) -> bool:
-    if not needed:
-        return True
-    names = {stack.name.lower() for project in projects for stack in project.tech_stacks}
-    skills = (user.profile.skills or "").lower() if user.profile else ""
-    return all(tech.lower() in names or tech.lower() in skills for tech in needed)
+@dataclass
+class TalentQuery:
+    """Filters a recruiter can combine. Every filter only looks at data this viewer is allowed to see."""
+    query: str = ""
+    tech: list[str] = field(default_factory=list)
+    evidence: str = "any"  # any: project tech or listed skills; projects: only tech used in visible projects
+    min_projects: int = 0  # visible projects using any requested tech (or any visible project with no tech)
+    github: bool = False  # has commits credited from imported repositories
+    source: bool = False  # has a visible project with uploaded or linked source code
+    open_to_work: bool = False
+    work_type: str = ""
+    arrangement: str = ""
+    sort: str = "relevance"
 
 
-def _matches_query(user: User, query: str) -> bool:
+def _list(value: str | None) -> list[str]:
+    return [part for part in (value or "").split(",") if part]
+
+
+def _matches_query(user: User, query: str, open_profile: bool) -> bool:
     if not query:
         return True
-    profile = user.profile
+    profile = user.profile if open_profile else None
     haystack = " ".join(filter(None, [
         user.username,
         profile.full_name if profile else None,
         profile.headline if profile else None,
         profile.skills if profile else None,
-        profile.company if profile else None,
-        profile.role if profile else None,
+        profile.location if profile else None,
     ])).lower()
     return query.lower() in haystack
 
 
-def talent_board(db: Session, viewer_id: UUID | None, query: str, tech: list[str], sort: str, limit: int) -> list[dict]:
-    """Discoverable people, ranked by work and activity the viewer is allowed to see."""
+def source_project_ids(db: Session, projects: list[Project]) -> set[UUID]:
+    ids = [p.id for p in projects]
+    uploaded = {row[0] for row in db.query(FileRecord.project_id).filter(FileRecord.project_id.in_(ids)).distinct()} if ids else set()
+    return uploaded | {p.id for p in projects if p.github_url}
+
+
+def _availability(profile: UserProfile | None, open_profile: bool) -> tuple[bool, list[str], list[str]]:
+    if not open_profile or profile is None or not profile.open_to_work:
+        return False, [], []
+    return True, _list(profile.work_types), _list(profile.work_arrangements)
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def talent_board(db: Session, viewer_id: UUID | None, q: TalentQuery, limit: int) -> list[dict]:
+    """Discoverable developers, filtered and ordered by evidence this viewer is allowed to see.
+
+    There is no overall score: each sort is one visible measure, and each card lists why it matched.
+    Someone without imported GitHub history is shown as "not imported", never as inactive.
+    """
     public = (
         db.query(Project)
         .options(selectinload(Project.tech_stacks))
@@ -264,29 +297,74 @@ def talent_board(db: Session, viewer_id: UUID | None, query: str, tech: list[str
     by_owner: dict[UUID, list[Project]] = defaultdict(list)
     for project in public:
         by_owner[project.owner_id].append(project)
-    credited = credit(db, [p for p in public if p.github_url or p.github_commit_count or p.github_push_count])
+    imported = [p for p in public if p.github_url or p.github_commit_count or p.github_push_count]
+    credited = credit(db, imported)
+    with_source = source_project_ids(db, public)
+    needed = [t.lower() for t in q.tech]
 
     users = db.query(User).options(selectinload(User.profile)).outerjoin(User.profile).filter(
         or_(UserProfile.discoverable.is_(None), UserProfile.discoverable.is_(True)),
-        or_(UserProfile.role.is_(None), UserProfile.role != "Recruiter"),
+        User.account_type != "recruiter",
     ).all()
 
     cards = []
     for user in users:
         if viewer_id and user.id == viewer_id:
             continue
-        projects = by_owner.get(user.id, [])
-        if not _matches_query(user, query) or not _matches_tech(user, projects, tech):
-            continue
         open_profile = profile_open_to(db, user.id, viewer_id)
         profile = user.profile
+        projects = by_owner.get(user.id, []) if open_profile else []
+        if not _matches_query(user, q.query, open_profile):
+            continue
+
+        project_tech = {stack.name.lower() for project in projects for stack in project.tech_stacks}
+        skills = (profile.skills or "").lower() if open_profile and profile else ""
+        in_projects = [t for t in needed if t in project_tech]
+        in_skills = [t for t in needed if t not in project_tech and t in skills]
+        if needed and (len(in_projects) + (0 if q.evidence == "projects" else len(in_skills))) < len(needed):
+            continue
+        relevant = [p for p in projects if not needed or any(s.name.lower() in needed for s in p.tech_stacks)]
+        if len(relevant) < q.min_projects:
+            continue
+        source_count = sum(1 for p in projects if p.id in with_source)
+        if q.source and not source_count:
+            continue
+        work = credited.get(user.id, {}) if open_profile else {}
+        github_history = bool(work)
+        if q.github and not work.get("commits"):
+            continue
+        open_to_work, work_types, arrangements = _availability(profile, open_profile)
+        if q.open_to_work and not open_to_work:
+            continue
+        if q.work_type and q.work_type not in work_types:
+            continue
+        if q.arrangement and q.arrangement not in arrangements:
+            continue
+
         show_connections = audience_open(db, user, viewer_id, "connection_visibility", "public")
         show_activity = audience_open(db, user, viewer_id, "activity_visibility", "public")
         connections = _connection_count(db, user.id) if show_connections else None
         activity = _activity_count(db, user.id) if show_activity else None
-        work = credited.get(user.id, {})
         last_push: datetime | None = work.get("last_push")
-        tech_names = sorted({stack.name for project in projects for stack in project.tech_stacks})
+        names = {stack.name.lower(): stack.name for project in projects for stack in project.tech_stacks}
+
+        match: list[str] = []
+        for tech in in_projects:
+            used = sum(1 for p in projects if any(s.name.lower() == tech for s in p.tech_stacks))
+            match.append(f"Uses {names.get(tech, tech)} in {_plural(used, 'public project')}")
+        for tech in in_skills:
+            match.append(f"Lists {tech} as a skill (no public project shows it yet)")
+        if q.query:
+            match.append(f"Profile mentions \u201c{q.query}\u201d")
+        if source_count:
+            match.append(f"{_plural(source_count, 'project')} with source code to review")
+        if github_history:
+            match.append(f"{_plural(work.get('commits', 0), 'commit')} credited from imported GitHub repositories")
+        elif projects:
+            match.append("No GitHub history imported (not counted against them)")
+        if open_to_work:
+            match.append("Open to work" + (f": {', '.join(work_types)}" if work_types else ""))
+
         cards.append({
             "id": user.id,
             "username": user.username,
@@ -297,32 +375,43 @@ def talent_board(db: Session, viewer_id: UUID | None, query: str, tech: list[str
             "avatar_url": None if not open_profile else (profile.avatar_url if profile else None),
             "location": None if not open_profile else (profile.location if profile else None),
             "skills": None if not open_profile else (profile.skills if profile else None),
-            "projects": 0 if not open_profile else len(projects),
-            "commits": 0 if not open_profile else work.get("commits", 0),
-            "pushes": 0 if not open_profile else work.get("pushes", 0),
+            "projects": len(projects),
+            "relevant_projects": len(relevant),
+            "source_projects": source_count,
+            "commits": work.get("commits", 0),
+            "pushes": work.get("pushes", 0),
+            "github_history": github_history,
             "connections": connections,
             "activity": activity,
-            "last_push": None if not open_profile else last_push,
-            "tech": [] if not open_profile else tech_names,
-            "sort_connections": -1 if connections is None else connections,
-            "sort_activity": -1 if activity is None else activity,
+            "last_push": last_push,
+            "tech": sorted(names.values()),
+            "open_to_work": open_to_work,
+            "work_types": work_types,
+            "work_arrangements": arrangements,
+            "restricted": not open_profile,
+            "match": match,
+            "_tech_hits": len(in_projects) * 2 + len(in_skills),
+            "_connections": -1 if connections is None else connections,
+            "_activity": -1 if activity is None else activity,
         })
 
     key = {
-        "projects": lambda card: (card["projects"], card["commits"]),
-        "commits": lambda card: (card["commits"], card["projects"]),
-        "pushes": lambda card: (card["pushes"], _aware(card["last_push"]), card["projects"]),
-        "connections": lambda card: (card["sort_connections"], card["projects"]),
-        "activity": lambda card: (card["sort_activity"], card["projects"]),
-    }[sort]
+        "relevance": lambda c: (c["_tech_hits"], c["relevant_projects"], c["source_projects"], c["github_history"]),
+        "projects": lambda c: (c["projects"], c["commits"]),
+        "commits": lambda c: (c["github_history"], c["commits"], c["projects"]),
+        "pushes": lambda c: (c["github_history"], c["pushes"], _aware(c["last_push"]), c["projects"]),
+        "recent": lambda c: (c["last_push"] is not None, _aware(c["last_push"]), c["projects"]),
+        "connections": lambda c: (c["_connections"], c["projects"]),
+        "activity": lambda c: (c["_activity"], c["projects"]),
+    }[q.sort]
     cards.sort(key=key, reverse=True)
     for card in cards:
-        card.pop("sort_connections")
-        card.pop("sort_activity")
+        for private in ("_tech_hits", "_connections", "_activity"):
+            card.pop(private)
     return cards[:limit]
 
 
 def field_top(db: Session, viewer_id: UUID | None) -> dict:
     """Highest visible count for each metric across the people this viewer can find."""
-    cards = talent_board(db, viewer_id, "", [], "projects", limit=10_000)
-    return {metric: max((card[metric] or 0 for card in cards), default=0) for metric in SORTS}
+    cards = talent_board(db, viewer_id, TalentQuery(sort="projects"), limit=10_000)
+    return {metric: max((card[metric] or 0 for card in cards), default=0) for metric in METRICS}

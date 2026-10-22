@@ -23,7 +23,7 @@ from app.schemas.project import (
     ProjectLikeResponse,
     ProjectResponse,
 )
-from app.core.dependencies import get_current_user, get_current_user_optional
+from app.core.dependencies import get_current_user, get_current_user_optional, require_developer
 from app.models.user import User
 from app.models.project_like import ProjectLike
 from app.services.social import (
@@ -57,7 +57,7 @@ router = APIRouter(prefix="/projects", tags=["Projects"])
 def create_project(
     project_data: ProjectCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_developer)
 ):
     tech_stacks = db.query(TechStack).filter(
         TechStack.id.in_(project_data.tech_stack_ids)
@@ -268,7 +268,7 @@ def upload_project_workspace(
         description='Multipart field name: "file". Filename must end with .zip.',
     ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_developer),
 ):
     """
     Owner uploads a ZIP; server extracts to storage/project_<id>/ and rebuilds the files table.
@@ -572,7 +572,7 @@ def update_project(
     project_id: UUID,
     project_update: ProjectCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_developer)
 ):
     project = db.query(Project).filter(Project.id == project_id).first()
 

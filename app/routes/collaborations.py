@@ -10,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user, get_current_user_optional
+from app.core.dependencies import get_current_user, get_current_user_optional, require_developer
 from app.core.errors import Conflict
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
@@ -189,7 +189,7 @@ def get_project_collaboration_requests(project_id: UUID, db: Session = Depends(g
 
 @router.post("/projects/{project_id}/requests", response_model=CollaborationRequestResponse, dependencies=[rate_limit("collab", 20, 60)])
 def submit_collaboration_request(project_id: UUID, data: CollaborationRequestCreate, db: Session = Depends(get_db),
-                                 me: User = Depends(get_current_user)):
+                                 me: User = Depends(require_developer)):
     project = _project(db, project_id, me)
     if project.owner_id == me.id:
         raise HTTPException(status_code=400, detail="Cannot request collaboration on your own project")
@@ -237,7 +237,7 @@ def _owners_pending_request(db: Session, request_id: UUID, me: User) -> Collabor
 
 @router.put("/requests/{request_id}/accept", response_model=ProjectCollaboratorResponse)
 def accept_collaboration_request(request_id: UUID, data: Optional[AccessUpdate] = Body(None),
-                                 db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+                                 db: Session = Depends(get_db), me: User = Depends(require_developer)):
     req = _owners_pending_request(db, request_id, me)
     access = _grantable(req.project, me, (data or AccessUpdate()).access)
     req.status = "accepted"
@@ -275,10 +275,10 @@ def withdraw_collaboration_request(request_id: UUID, db: Session = Depends(get_d
 # ---------------- invitations ----------------
 @router.get("/projects/{project_id}/invitee-search", response_model=List[InviteeResult])
 def search_invitees(project_id: UUID, q: str = Query(..., min_length=1, max_length=30), db: Session = Depends(get_db),
-                    me: User = Depends(get_current_user)):
+                    me: User = Depends(require_developer)):
     project = _project(db, project_id, me, team=True)
     users = db.query(User).filter(func.lower(User.username).startswith(q.strip().lower(), autoescape=True),
-                                  User.id != project.owner_id).order_by(User.username).limit(10).all()
+                                  User.id != project.owner_id, User.account_type != "recruiter").order_by(User.username).limit(10).all()
     ids = [u.id for u in users]
     members = {r[0] for r in db.query(ProjectCollaborator.user_id).filter(ProjectCollaborator.project_id == project_id, ProjectCollaborator.user_id.in_(ids))}
     invited = {r[0] for r in _live_invitations(db).with_entities(ProjectInvitation.invitee_id).filter(ProjectInvitation.project_id == project_id)}
@@ -290,7 +290,7 @@ def search_invitees(project_id: UUID, q: str = Query(..., min_length=1, max_leng
 
 
 @router.post("/projects/{project_id}/invitations", response_model=InvitationResponse, dependencies=[rate_limit("collab", 20, 60)])
-def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = Depends(get_db), me: User = Depends(require_developer)):
     project = _project(db, project_id, me, team=True)
     access = _grantable(project, me, data.access)
     invitee = db.query(User).filter(func.lower(User.username) == data.username.strip().lower()).first()
@@ -298,6 +298,8 @@ def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = 
         raise HTTPException(status_code=404, detail="No developer with that username")
     if invitee.id in (me.id, project.owner_id):
         raise HTTPException(status_code=400, detail="You cannot invite yourself")
+    if invitee.is_recruiter:
+        raise HTTPException(status_code=400, detail="Recruiter accounts cannot join project teams")
     if not may_invite(db, me.id, invitee):
         raise HTTPException(status_code=403, detail="This person is not accepting collaboration invites")
     if _member(db, project_id, invitee.id):
@@ -346,7 +348,7 @@ def _answer(db: Session, invitation_id: UUID, me: User, status: str) -> ProjectI
 
 
 @router.put("/invitations/{invitation_id}/accept", response_model=ProjectCollaboratorResponse)
-def accept_invitation(invitation_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+def accept_invitation(invitation_id: UUID, db: Session = Depends(get_db), me: User = Depends(require_developer)):
     inv = _answer(db, invitation_id, me, "accepted")
     collab = _join(db, inv.project, me, inv.role, inv.access, inv.project.owner)
     notify(db, inv.project.owner_id, me, "collaboration_joined", str(inv.project_id),
@@ -407,7 +409,7 @@ def remove_member(project_id: UUID, user_id: UUID, db: Session = Depends(get_db)
 
 
 @router.patch("/projects/{project_id}/focus", response_model=FocusUpdate)
-def set_my_focus(project_id: UUID, data: FocusUpdate, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+def set_my_focus(project_id: UUID, data: FocusUpdate, db: Session = Depends(get_db), me: User = Depends(require_developer)):
     """The owner or a member says what they are working on; nobody else can write it."""
     project = _project(db, project_id, me)
     focus = (data.focus or "").strip() or None
@@ -425,7 +427,7 @@ def set_my_focus(project_id: UUID, data: FocusUpdate, db: Session = Depends(get_
 
 @router.patch("/projects/{project_id}/members/{user_id}", response_model=ProjectCollaboratorResponse)
 def update_member_access(project_id: UUID, user_id: UUID, data: AccessUpdate,
-                         db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+                         db: Session = Depends(get_db), me: User = Depends(require_developer)):
     _, member = _owners_member(db, project_id, user_id, me)
     apply_access(member, data.access)
     _changed(db, project_id, user_id)

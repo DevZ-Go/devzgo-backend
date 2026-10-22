@@ -37,11 +37,19 @@ def test_recruiter_signup_asks_for_a_company_and_shows_it(client, make_user):
     assert hidden["restricted"] is True and hidden["company"] is None and hidden["role"] == "Recruiter"
 
 
-def test_becoming_a_recruiter_later_still_needs_a_company(client, make_user):
-    headers, _ = make_user()
-    assert client.put("/profiles/me", headers=headers, json={"role": "Recruiter"}).status_code == 400
-    saved = client.put("/profiles/me", headers=headers, json={"role": "Recruiter", "company": "Campus Hire"}).json()
-    assert saved["role"] == "Recruiter" and saved["company"] == "Campus Hire"
+def test_profile_role_cannot_cross_the_account_type(client, make_user, make_recruiter):
+    developer, _ = make_user()
+    refused = client.put("/profiles/me", headers=developer, json={"role": "Recruiter", "company": "Campus Hire"})
+    assert refused.status_code == 400
+    assert client.get("/auth/me", headers=developer).json()["account_type"] == "developer"
+    assert client.put("/profiles/me", headers=developer, json={"role": "Designer"}).json()["role"] == "Designer"
+
+    recruiter, _ = make_recruiter()
+    assert client.get("/auth/me", headers=recruiter).json()["account_type"] == "recruiter"
+    assert client.put("/profiles/me", headers=recruiter, json={"role": "Developer"}).status_code == 400
+    assert client.put("/profiles/me", headers=recruiter, json={"company": ""}).status_code == 400
+    saved = client.put("/profiles/me", headers=recruiter, json={"company": "Campus Hire"}).json()
+    assert saved["role"] == "Recruiter" and saved["company"] == "Campus Hire" and saved["account_type"] == "recruiter"
 
 
 def test_project_and_team_lists_follow_visibility(client, make_user):

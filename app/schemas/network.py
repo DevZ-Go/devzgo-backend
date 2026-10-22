@@ -28,6 +28,10 @@ def _timezone(value: str) -> str:
 
 TimeZone = Annotated[str, Field(min_length=1, max_length=64), AfterValidator(_timezone)]
 ShortText = Annotated[Optional[str], Field(default=None, max_length=255)]
+WORK_TYPES = ("full-time", "part-time", "internship", "co-op", "contract", "freelance")
+WORK_ARRANGEMENTS = ("remote", "hybrid", "on-site")
+WorkType = Literal["full-time", "part-time", "internship", "co-op", "contract", "freelance"]
+WorkArrangement = Literal["remote", "hybrid", "on-site"]
 
 # ==================== PROFILES ====================
 class UserProfileBase(BaseModel):
@@ -71,6 +75,10 @@ class UserProfileUpdate(UserProfileBase):
     notify_connections: Optional[bool] = None
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
+    open_to_work: Optional[bool] = None
+    work_types: Optional[List[WorkType]] = Field(default=None, max_length=len(WORK_TYPES))
+    work_arrangements: Optional[List[WorkArrangement]] = Field(default=None, max_length=len(WORK_ARRANGEMENTS))
+    availability_note: Optional[str] = Field(default=None, max_length=160)
 
 class UserProfileResponse(UserProfileBase):
     id: UUID
@@ -107,9 +115,24 @@ class UserProfileResponse(UserProfileBase):
     notify_connections: Optional[bool] = None
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
+    account_type: str = "developer"
+    tour_version: Optional[int] = None  # owner only
+    tour_state: Optional[str] = None  # owner only
+    open_to_work: bool = False
+    work_types: List[str] = []
+    work_arrangements: List[str] = []
+    availability_note: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+class TourUpdate(BaseModel):
+    version: int = Field(ge=1, le=1000)
+    state: Literal["completed", "skipped"]
+
+class TourState(BaseModel):
+    version: Optional[int] = None
+    state: Optional[str] = None
 
 class GroupMember(BaseModel):
     user_id: Optional[UUID] = None
@@ -167,12 +190,20 @@ class TalentCard(BaseModel):
     location: Optional[str] = None
     skills: Optional[str] = None
     projects: int = 0
+    relevant_projects: int = 0
+    source_projects: int = 0
     commits: int = 0
     pushes: int = 0
+    github_history: bool = False
     connections: Optional[int] = None
     activity: Optional[int] = None
     last_push: Optional[datetime] = None
     tech: List[str] = []
+    open_to_work: bool = False
+    work_types: List[str] = []
+    work_arrangements: List[str] = []
+    restricted: bool = False
+    match: List[str] = []
 
 # ==================== LIKES & COMMENTS ====================
 class ActivityCommentCreate(BaseModel):

@@ -17,7 +17,7 @@ from app.schemas.user import (
 from app.db.session import get_db
 from app.models.user import User
 from app.models.profile import UserProfile
-from app.services.roles import ROLES, assign_identity
+from app.services.roles import ROLES, account_type_for, assign_identity
 from app.models.password_reset import PasswordResetToken
 from app.core.policy import normalize_username, username_problem
 from app.core.security import hash_password, verify_password, issue_token
@@ -76,12 +76,15 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Choose one of the listed roles")
     if user_data.role == "Recruiter" and len(" ".join((user_data.company or "").split())) < 2:
         raise HTTPException(status_code=400, detail="Add the company or agency you recruit for")
-    user = save_new_user(db, User(username=user_data.username, email=email, password_hash=hash_password(user_data.password)))
+    user = save_new_user(db, User(
+        username=user_data.username, email=email, password_hash=hash_password(user_data.password),
+        account_type=account_type_for(user_data.role),
+    ))
     if user_data.role or user_data.company:
         profile = UserProfile(user_id=user.id)
         db.add(profile)
         assign_identity(
-            profile, user_data.role, user_data.company,
+            user, profile, user_data.role, user_data.company,
             company_sent=True, role_sent=user_data.role is not None,
         )
         user.profile = profile

@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.dependencies import get_current_user, get_current_user_optional
+from app.core.dependencies import get_current_user_optional, require_developer
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.github_history import ProjectCommit, ProjectContributor, ProjectPush
@@ -155,7 +155,7 @@ def push_history(project_id: UUID, contributor: Optional[UUID] = None, offset: i
 
 
 @router.post("/refresh", dependencies=[rate_limit("github_refresh", 6, 60)])
-def refresh(project_id: UUID, data: RefreshRequest, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+def refresh(project_id: UUID, data: RefreshRequest, db: Session = Depends(get_db), me: User = Depends(require_developer)):
     project = _project(db, project_id, me)
     if project.owner_id != me.id:
         raise HTTPException(status_code=403, detail="Only the project owner can refresh GitHub history")
