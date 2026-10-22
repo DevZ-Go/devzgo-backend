@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 import uuid as uuidlib
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import or_
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from app.db.session import get_db
@@ -25,18 +25,22 @@ from app.services.social import (
 )
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.schemas.network import (
+    WORK_ARRANGEMENTS,
+    WORK_TYPES,
     CollabGroup,
     ConnectionUserSummary,
     JoinedProject,
     Standing,
     TalentCard,
+    TourState,
+    TourUpdate,
     UserProfileResponse,
     UserProfileUpdate,
 )
 from app.schemas.project import ProjectResponse
 from app.services.roles import assign_identity
 from app.services.talent import (
-    SORTS, field_top, groups_for, joined_for, joined_project, projects_for, standing_for, talent_board,
+    SORTS, TalentQuery, field_top, groups_for, joined_for, joined_project, projects_for, standing_for, talent_board,
 )
 AVATAR_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
 OWN_SETTINGS = (
@@ -65,8 +69,10 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
     restricted = bool(profile and profile.profile_visibility == "connections" and not own and not connected)
     resume_url = profile.resume_url if profile else None
     company = profile.company if profile else None
+    open_to_work = bool(profile and profile.open_to_work and not user.is_recruiter)
     if restricted:
         headline = bio = skills = location = github_url = linkedin_url = website_url = resume_url = company = None
+        open_to_work = own and open_to_work
     elif not own and db is not None and not audience_open(db, user, viewer_id, "resume_visibility", default="connections"):
         resume_url = None
     show_email = own or (db is not None and audience_open(db, user, viewer_id, "email_visibility", default="private"))
@@ -120,8 +126,19 @@ def _build_profile_response(user: User, viewer_id: Optional[UUID] = None, db: Op
         restricted=restricted,
         can_message=True if own or db is None else may_message(db, viewer_id, user) if viewer_id else False,
         accepts_connections=accepts_connection_requests(user),
+        account_type=user.account_type or "developer",
+        tour_version=profile.tour_version if own and profile else None,
+        tour_state=profile.tour_state if own and profile else None,
+        open_to_work=open_to_work,
+        work_types=split_list(profile.work_types) if open_to_work or own and profile else [],
+        work_arrangements=split_list(profile.work_arrangements) if open_to_work or own and profile else [],
+        availability_note=profile.availability_note if open_to_work or own and profile else None,
         **({field: getattr(profile, field) for field in OWN_SETTINGS} if own and profile else {}),
     )
+
+
+def split_list(value: Optional[str]) -> list[str]:
+    return [part for part in (value or "").split(",") if part]
 
 @router.get("/me", response_model=UserProfileResponse)
 def get_my_profile(
@@ -148,16 +165,24 @@ def update_my_profile(
     changes = profile_data.model_dump(exclude_unset=True)
     if "role" in sent or "company" in sent:
         assign_identity(
+            current_user,
             profile,
             changes.pop("role", None),
             changes.pop("company", None),
             company_sent="company" in sent,
             role_sent="role" in sent,
         )
+    if current_user.is_recruiter and changes.get("open_to_work"):
+        raise HTTPException(status_code=400, detail="Availability is for developer accounts")
+    for field in ("work_types", "work_arrangements"):
+        if field in changes:
+            changes[field] = ",".join(dict.fromkeys(changes[field] or [])) or None
     # Only fields sent by the client change; sending "" or null clears a field.
     for field, value in changes.items():
         if field == "timezone" and not value:
             continue  # always set; clearing it is not allowed
+        if field == "open_to_work" and value is None:
+            continue
         setattr(profile, field, value.strip() or None if isinstance(value, str) else value)
 
     current_user.profile = profile
@@ -178,6 +203,20 @@ def mark_recruiting_guide(db: Session = Depends(get_db), current_user: User = De
     profile.guide_seen = True
     db.commit()
     return {"guide_seen": True}
+
+
+@router.put("/me/tour", response_model=TourState)
+def save_tour_state(data: TourUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Record that this version of the tour was finished or skipped. Either way it stops opening by itself."""
+    profile = current_user.profile or UserProfile(user_id=current_user.id)
+    if current_user.profile is None:
+        db.add(profile)
+        current_user.profile = profile
+    profile.tour_version = data.version
+    profile.tour_state = data.state
+    profile.guide_seen = True
+    db.commit()
+    return {"version": profile.tour_version, "state": profile.tour_state}
 
 
 @router.post("/me/avatar", response_model=UserProfileResponse)
@@ -258,18 +297,31 @@ def search_developers(
 @router.get("/talent", response_model=List[TalentCard])
 def talent(
     q: str = Query("", max_length=80),
-    tech: str = Query("", description="Comma-separated tech names. A person must match every one."),
-    sort: str = Query("projects"),
+    tech: str = Query("", max_length=300, description="Comma-separated tech names. A person must match every one."),
+    evidence: Literal["any", "projects"] = Query("any", description="projects: only count tech shown in visible projects"),
+    min_projects: int = Query(0, ge=0, le=50),
+    github: bool = Query(False, description="Only people with commits credited from imported GitHub repositories"),
+    source: bool = Query(False, description="Only people with a visible project that has source code"),
+    open_to_work: bool = Query(False),
+    work_type: str = Query("", max_length=20),
+    arrangement: str = Query("", max_length=20),
+    sort: str = Query("relevance"),
     limit: int = Query(30, ge=1, le=50),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """People a recruiter can review, ranked by work this viewer is allowed to see."""
+    """People a recruiter can review, filtered and ordered by evidence this viewer is allowed to see."""
     if sort not in SORTS:
-        raise HTTPException(status_code=400, detail="Sort by projects, commits, pushes, connections, or activity")
-    needed = [part.strip() for part in tech.split(",") if part.strip()]
+        raise HTTPException(status_code=400, detail=f"Sort by one of: {', '.join(SORTS)}")
+    if work_type and work_type not in WORK_TYPES or arrangement and arrangement not in WORK_ARRANGEMENTS:
+        raise HTTPException(status_code=400, detail="Unknown work type or arrangement")
+    needed = [part.strip() for part in tech.split(",") if part.strip()][:10]
     viewer = current_user.id if current_user else None
-    return talent_board(db, viewer, q.strip(), needed, sort, limit)
+    filters = TalentQuery(
+        query=q.strip(), tech=needed, evidence=evidence, min_projects=min_projects, github=github, source=source,
+        open_to_work=open_to_work, work_type=work_type, arrangement=arrangement, sort=sort,
+    )
+    return talent_board(db, viewer, filters, limit)
 
 
 @router.get("/{user_id}", response_model=UserProfileResponse)

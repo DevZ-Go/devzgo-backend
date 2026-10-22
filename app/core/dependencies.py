@@ -51,3 +51,19 @@ def get_current_user_optional(
 ):
     """Same as get_current_user but returns None if no/invalid token (for optional auth routes)."""
     return user_from_token(db, credentials.credentials) if credentials else None
+
+
+def require_developer(user: User = Depends(get_current_user)) -> User:
+    """Project building, uploads, GitHub imports and team membership belong to developer accounts."""
+    if user.is_recruiter:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Recruiter accounts review work; they cannot create, import, edit or join projects",
+        )
+    return user
+
+
+def require_recruiter(user: User = Depends(get_current_user)) -> User:
+    if not user.is_recruiter:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only recruiter accounts can use recruiting tools")
+    return user

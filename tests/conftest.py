@@ -59,3 +59,16 @@ def make_user(client):
         headers = {"Authorization": f"Bearer {token}"}
         return headers, client.get("/auth/me", headers=headers).json()["id"]
     return _make
+
+
+@pytest.fixture
+def make_recruiter(client):
+    """Register a fresh recruiter account and return (auth headers, user id)."""
+    def _make(company: str = "North Agency"):
+        name = "r" + uuid.uuid4().hex[:10]
+        client.post("/auth/register", json={"username": name, "email": f"{name}@example.com", "password": "Password1!",
+                                            "role": "Recruiter", "company": company})
+        token = client.post("/auth/login", data={"username": name, "password": "Password1!"}).json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        return headers, client.get("/auth/me", headers=headers).json()["id"]
+    return _make

@@ -67,6 +67,7 @@ class UserResponse(BaseModel):
     created_at: datetime
     has_password: bool = True
     username_needs_choice: bool = False
+    account_type: str = "developer"
 
     class Config:
         from_attributes = True

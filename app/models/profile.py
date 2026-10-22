@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Boolean, Column, String, Text, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, String, Text, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -18,6 +18,14 @@ class UserProfile(Base):
     role = Column(String(40), nullable=True)
     company = Column(String(120), nullable=True)  # the company or agency, required when role is Recruiter
     guide_seen = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Recruiter tour: the version last finished or skipped, so a new tour version opens once again.
+    tour_version = Column(Integer, nullable=True)
+    tour_state = Column(String(20), nullable=True)  # completed | skipped
+    # Opt-in availability shown to recruiters; nothing is assumed when it is off.
+    open_to_work = Column(Boolean, nullable=False, default=False, server_default="false")
+    work_types = Column(String(120), nullable=True)  # comma list from WORK_TYPES
+    work_arrangements = Column(String(60), nullable=True)  # comma list from WORK_ARRANGEMENTS
+    availability_note = Column(String(160), nullable=True)
     bio = Column(Text, nullable=True)
     avatar_url = Column(String, nullable=True)
     github_url = Column(String, nullable=True)

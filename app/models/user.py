@@ -16,12 +16,18 @@ class User(Base):
     github_id = Column(String(32), nullable=True)
     # Bumped when the password changes; tokens carrying an older value stop working.
     token_version = Column(Integer, nullable=False, server_default="0")
+    # "developer" or "recruiter"; fixed at sign-up and never changed by profile edits.
+    account_type = Column(String(20), nullable=False, default="developer", server_default="developer")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         Index("uq_users_github_id", "github_id", unique=True),
         Index("uq_users_username_lower", func.lower(username), unique=True),
     )
+
+    @property
+    def is_recruiter(self) -> bool:
+        return self.account_type == "recruiter"
 
     @property
     def has_password(self) -> bool:

@@ -22,7 +22,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import require_developer
 from app.core.security import ALGORITHM, SECRET_KEY
 from app.db.session import get_db
 from app.models.enums import ProjectVisibility
@@ -66,7 +66,7 @@ def _token_or_410(handle: str, user: User) -> str:
 
 
 @router.post("/github/import/authorize")
-def authorize(me: User = Depends(get_current_user)):
+def authorize(me: User = Depends(require_developer)):
     if not gh.configured():
         raise HTTPException(status_code=503, detail="GitHub is not configured on this server")
     state = jwt.encode(
@@ -91,7 +91,7 @@ def import_redirect(code: str, state: str, error: str) -> RedirectResponse:
 
 
 @router.post("/github/import/session")
-def open_session(data: SessionRequest, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+def open_session(data: SessionRequest, db: Session = Depends(get_db), me: User = Depends(require_developer)):
     try:
         claims = jwt.decode(data.state, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
@@ -124,7 +124,7 @@ def open_session(data: SessionRequest, db: Session = Depends(get_db), me: User =
 
 
 @router.post("/github/import/repos/{repo_id}")
-def import_repo(repo_id: int, data: HandleRequest, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+def import_repo(repo_id: int, data: HandleRequest, db: Session = Depends(get_db), me: User = Depends(require_developer)):
     token = _token_or_410(data.session, me)
     try:
         repo = gh.get_repo(token, repo_id)
@@ -206,6 +206,6 @@ def import_repo(repo_id: int, data: HandleRequest, db: Session = Depends(get_db)
 
 
 @router.post("/github/import/session/close")
-def close_session(data: HandleRequest, me: User = Depends(get_current_user)):
+def close_session(data: HandleRequest, me: User = Depends(require_developer)):
     gh.close_session(data.session, me.id)
     return {"closed": True}

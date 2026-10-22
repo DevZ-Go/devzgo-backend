@@ -18,3 +18,4 @@ from app.models.project_like import ProjectLike
 from app.models.project_comment import ProjectComment
 from app.models.password_reset import PasswordResetToken
 from app.models.monthly_wrap import MonthlyWrap
+from app.models.recruiting import RecruitmentRequest, Shortlist, ShortlistEntry

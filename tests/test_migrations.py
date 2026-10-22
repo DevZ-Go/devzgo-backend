@@ -77,6 +77,22 @@ def test_legacy_create_all_database_upgrades_cleanly(migr_engine):
         assert conn.execute(text("SELECT count(*) FROM users")).scalar() == 1  # data survives
 
 
+def test_existing_recruiters_become_recruiter_accounts(migr_engine):
+    _run(migr_engine, "upgrade", "016_chat_room_photo")
+    with migr_engine.begin() as conn:
+        conn.execute(text("INSERT INTO users (id, username, email) VALUES "
+                          "('00000000-0000-0000-0000-00000000000a', 'hirer', 'hirer@example.com'), "
+                          "('00000000-0000-0000-0000-00000000000b', 'maker', 'maker@example.com')"))
+        conn.execute(text("INSERT INTO profiles (id, user_id, role, company) VALUES "
+                          "(gen_random_uuid(), '00000000-0000-0000-0000-00000000000a', 'Recruiter', 'North'), "
+                          "(gen_random_uuid(), '00000000-0000-0000-0000-00000000000b', 'Developer', NULL)"))
+    _run(migr_engine, "upgrade", "head")
+    with migr_engine.connect() as conn:
+        rows = dict(conn.execute(text("SELECT username, account_type FROM users")).all())
+        assert rows == {"hirer": "recruiter", "maker": "developer"}
+        assert conn.execute(text("SELECT count(*) FROM profiles WHERE open_to_work")).scalar() == 0
+
+
 def test_identity_migration_stops_on_case_duplicate_usernames(migr_engine):
     _run(migr_engine, "upgrade", "003_baseline")
     with migr_engine.begin() as conn:

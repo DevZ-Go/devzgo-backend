@@ -6,7 +6,7 @@ import uuid
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.user import User
-from app.core.dependencies import get_current_user
+from app.core.dependencies import require_developer
 from app.services import storage
 from app.services.social import project_access
 
@@ -37,7 +37,7 @@ def upload_project_media(
     cover_image: UploadFile | None = File(default=None),
     demo_video: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_developer),
 ):
     project = db.query(Project).filter(Project.id == project_id).first()
 
