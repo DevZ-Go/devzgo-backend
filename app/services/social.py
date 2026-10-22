@@ -3,12 +3,14 @@
 from typing import Dict, Optional
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.collaboration import ProjectCollaborator
+from app.models.connection import Connection
 from app.models.enums import ProjectVisibility
 from app.models.notification import Notification
+from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.project_comment import ProjectComment
 from app.models.project_like import ProjectLike
@@ -32,9 +34,38 @@ def user_summary(user: User) -> ConnectionUserSummary:
     )
 
 
+def _accepted_sql(viewer_id: UUID, other_column):
+    return exists(select(Connection.id).where(
+        Connection.status == "accepted",
+        or_(
+            and_(Connection.requester_id == viewer_id, Connection.receiver_id == other_column),
+            and_(Connection.requester_id == other_column, Connection.receiver_id == viewer_id),
+        ),
+    ))
+
+
+def audience_clause(user_column, field: str, closed_value: str, viewer_id: Optional[UUID]):
+    """People who set this field to `closed_value` are visible to themselves and accepted connections."""
+    closed = exists(select(UserProfile.id).where(
+        UserProfile.user_id == user_column,
+        getattr(UserProfile, field) == closed_value,
+    ))
+    if viewer_id is None:
+        return ~closed
+    return or_(~closed, user_column == viewer_id, _accepted_sql(viewer_id, user_column))
+
+
+def public_project_filter(viewer_id: Optional[UUID]):
+    """Public projects whose owner has not limited their profile to connections."""
+    return and_(
+        Project.visibility == ProjectVisibility.PUBLIC,
+        audience_clause(Project.owner_id, "profile_visibility", "connections", viewer_id),
+    )
+
+
 def visible_project_filter(viewer_id: Optional[UUID]):
-    """SQL condition: project is Public, or the viewer owns it or collaborates on it."""
-    clause = Project.visibility == ProjectVisibility.PUBLIC
+    """SQL condition: a public project the viewer may see, or one they own or collaborate on."""
+    clause = public_project_filter(viewer_id)
     if viewer_id:
         clause = or_(
             clause,
@@ -42,6 +73,103 @@ def visible_project_filter(viewer_id: Optional[UUID]):
             Project.collaborators.any(ProjectCollaborator.user_id == viewer_id),
         )
     return clause
+
+
+def is_connected(db: Session, a: UUID, b: UUID) -> bool:
+    if a == b:
+        return True
+    return db.query(Connection.id).filter(
+        Connection.status == "accepted",
+        or_(
+            and_(Connection.requester_id == a, Connection.receiver_id == b),
+            and_(Connection.requester_id == b, Connection.receiver_id == a),
+        ),
+    ).first() is not None
+
+
+def profile_open_to(db: Session, owner_id: UUID, viewer_id: Optional[UUID]) -> bool:
+    if viewer_id is not None and viewer_id == owner_id:
+        return True
+    profile = db.query(UserProfile).filter_by(user_id=owner_id).first()
+    if profile is None or profile.profile_visibility != "connections":
+        return True
+    return viewer_id is not None and is_connected(db, viewer_id, owner_id)
+
+
+def _setting(user: User, field: str, default):
+    profile = user.profile
+    if profile is None:
+        return default
+    value = getattr(profile, field)
+    return default if value is None else value
+
+
+def may_message(db: Session, sender_id: UUID, recipient: User) -> bool:
+    if _setting(recipient, "message_policy", "anyone") != "connections":
+        return True
+    return is_connected(db, sender_id, recipient.id)
+
+
+def may_comment(db: Session, commenter_id: UUID, author_id: UUID) -> bool:
+    if commenter_id == author_id:
+        return True
+    profile = db.query(UserProfile).filter_by(user_id=author_id).first()
+    if profile is None or profile.comment_policy != "connections":
+        return True
+    return is_connected(db, commenter_id, author_id)
+
+
+def may_comment_on_project(db: Session, commenter_id: UUID, project: Project) -> bool:
+    if commenter_id == project.owner_id:
+        return True
+    if db.query(ProjectCollaborator.id).filter_by(project_id=project.id, user_id=commenter_id).first():
+        return True
+    return may_comment(db, commenter_id, project.owner_id)
+
+
+def accepts_connection_requests(user: User) -> bool:
+    return _setting(user, "allow_connection_requests", True) is not False
+
+
+def audience_open(db: Session, owner: User, viewer_id: Optional[UUID], field: str, default: str = "public") -> bool:
+    """public, connections, or private (and collaboration's none, treated like private)."""
+    if viewer_id is not None and viewer_id == owner.id:
+        return True
+    policy = _setting(owner, field, default)
+    if policy in ("private", "none"):
+        return False
+    if policy == "connections":
+        return viewer_id is not None and is_connected(db, viewer_id, owner.id)
+    return True
+
+
+def may_invite(db: Session, actor_id: UUID, target: User) -> bool:
+    policy = _setting(target, "collaboration_policy", "anyone")
+    if policy == "none":
+        return False
+    if policy == "connections":
+        return is_connected(db, actor_id, target.id)
+    return True
+
+
+NOTIFY_FIELDS = {
+    "like": "notify_likes",
+    "project_like": "notify_likes",
+    "achievement": "notify_likes",
+    "comment": "notify_comments",
+    "project_comment": "notify_comments",
+    "share": "notify_shares",
+    "project_share": "notify_shares",
+    "connection_request": "notify_connections",
+    "connection_accepted": "notify_connections",
+    "new_message": "notify_messages",
+    "collaboration_invitation": "notify_collaborations",
+    "collaboration_request": "notify_collaborations",
+    "collaboration_accepted": "notify_collaborations",
+    "collaboration_joined": "notify_collaborations",
+    "collaboration_left": "notify_collaborations",
+    "collaboration_removed": "notify_collaborations",
+}
 
 
 def can_view_project(db: Session, project: Project, viewer_id: Optional[UUID]) -> bool:
@@ -53,7 +181,8 @@ def project_access(db: Session, project: Project, user_id: Optional[UUID]) -> Di
     if user_id is not None and project.owner_id == user_id:
         return dict(owner=True, member=False, view=True, edit=True, files=True, secrets=True)
     m = db.query(ProjectCollaborator).filter_by(project_id=project.id, user_id=user_id).first() if user_id else None
-    return dict(owner=False, member=m is not None, view=m is not None or project.visibility == ProjectVisibility.PUBLIC,
+    open_public = project.visibility == ProjectVisibility.PUBLIC and profile_open_to(db, project.owner_id, user_id)
+    return dict(owner=False, member=m is not None, view=m is not None or open_public,
                 edit=bool(m and m.can_edit_details), files=bool(m and m.can_manage_files), secrets=bool(m and m.can_view_secrets))
 
 
@@ -84,6 +213,11 @@ def notify(
     """Queue a notification (committed by the caller). `once` skips it if the same one already exists."""
     if recipient_id == actor.id:
         return None
+    field = NOTIFY_FIELDS.get(type_)
+    if field:
+        profile = db.query(UserProfile).filter_by(user_id=recipient_id).first()
+        if profile is not None and getattr(profile, field) is False:
+            return None
     if once and db.query(Notification.id).filter_by(
         recipient_id=recipient_id, actor_id=actor.id, type=type_, related_id=related_id
     ).first():
@@ -94,3 +228,13 @@ def notify(
     db.add(notif)
     queue_event(db, recipient_id, {"type": "notification.new", "notification_type": type_, "message": notif.message})
     return notif
+
+
+LIKE_MILESTONES = (5, 10, 25)
+
+
+def maybe_like_milestone(db: Session, recipient_id: UUID, actor: User, related_id: str, count: int, noun: str) -> None:
+    """Tell the author once when a post or project crosses a like milestone."""
+    if count not in LIKE_MILESTONES:
+        return
+    notify(db, recipient_id, actor, "achievement", f"{related_id}:{count}", f"Your {noun} reached {count} likes.", once=True)

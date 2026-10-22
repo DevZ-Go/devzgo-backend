@@ -14,7 +14,7 @@ from app.models.project_comment import ProjectComment
 from app.models.user import User
 from app.schemas.project import ProjectCommentCreate, ProjectCommentPage, ProjectCommentResponse
 from app.services.pagination import paginate
-from app.services.social import can_view_project, display_name, notify, user_summary
+from app.services.social import can_view_project, display_name, may_comment_on_project, notify, user_summary
 
 router = APIRouter(prefix="/projects/{project_id}/comments", tags=["Project comments"])
 
@@ -49,6 +49,8 @@ def add_comment(project_id: UUID, data: ProjectCommentCreate, db: Session = Depe
     project = _visible_project(db, project_id, user)
     if not project.comments_enabled:
         raise HTTPException(status_code=403, detail="Comments are turned off for this project")
+    if not may_comment_on_project(db, user.id, project):
+        raise HTTPException(status_code=403, detail="This person only accepts comments from connections")
     comment = ProjectComment(project_id=project_id, author_id=user.id, body=data.body)
     db.add(comment)
     notify(db, project.owner_id, user, "project_comment", str(project_id),

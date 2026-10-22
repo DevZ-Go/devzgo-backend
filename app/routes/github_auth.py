@@ -2,6 +2,7 @@
 Sign in with GitHub (OAuth web flow).
 
 /auth/github/login -> GitHub consent -> /auth/github/callback -> FRONTEND_URL/auth/callback#token=<JWT>
+Repository import shares /auth/github/callback; its signed state carries purpose "github_import".
 New GitHub users go to FRONTEND_URL/auth/github/onboarding#token=<onboarding token>&suggested=<name> instead,
 choose a username, and POST /auth/github/complete to create the account.
 Tokens travel in the URL fragment, which browsers never send to servers or put in Referer headers.
@@ -26,6 +27,9 @@ from app.db.session import get_db
 from app.models.profile import UserProfile
 from app.models.user import User
 from app.routes.auth import save_new_user, username_taken
+from app.routes.github_import import import_redirect
+from app.services.github_import import STATE_PURPOSE as IMPORT_PURPOSE
+from app.services.roles import assign_identity
 from app.schemas.user import GitHubCompleteRequest
 
 router = APIRouter(prefix="/auth/github", tags=["Auth"])
@@ -101,6 +105,7 @@ def _fill_profile(db: Session, user: User, gh: dict) -> None:
     profile = user.profile or UserProfile(user_id=user.id)
     if not user.profile:
         db.add(profile)
+        user.profile = profile
     profile.github_url = profile.github_url or gh["html_url"]
     profile.avatar_url = profile.avatar_url or gh["avatar_url"]
     profile.full_name = profile.full_name or gh["name"]
@@ -126,11 +131,13 @@ def github_login():
 
 
 @router.get("/callback", include_in_schema=False)
-def github_callback(request: Request, code: str = "", state: str = "", db: Session = Depends(get_db)):
+def github_callback(request: Request, code: str = "", state: str = "", error: str = "", db: Session = Depends(get_db)):
     try:
         claims = jwt.decode(state, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         return _fail("github_state")
+    if claims.get("purpose") == IMPORT_PURPOSE:
+        return import_redirect(code, state, error)
     if claims.get("purpose") != "github" or claims.get("nonce") != request.cookies.get(STATE_COOKIE) or not code:
         return _fail("github_state")
 
@@ -163,6 +170,8 @@ def github_complete(data: GitHubCompleteRequest, db: Session = Depends(get_db)):
         claims = {}
     if claims.get("purpose") != "github_onboarding":
         raise HTTPException(status_code=400, detail="This sign-up link has expired. Sign in with GitHub again.")
+    if data.role == "Recruiter" and len(" ".join((data.company or "").split())) < 2:
+        raise HTTPException(status_code=400, detail="Add the company or agency you recruit for")
     gh = claims["gh"]
     user = db.query(User).filter(User.github_id == gh["id"]).first()  # completed already in another tab
     if not user:
@@ -172,4 +181,12 @@ def github_complete(data: GitHubCompleteRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=409, detail="Email already registered")
         user = save_new_user(db, User(username=data.username, email=gh["email"].lower(), github_id=gh["id"], password_hash=None))
     _fill_profile(db, user, gh)
+    if data.role or data.company:
+        db.refresh(user)
+        profile = user.profile or UserProfile(user_id=user.id)
+        if user.profile is None:
+            db.add(profile)
+            user.profile = profile
+        assign_identity(profile, data.role, data.company, company_sent=data.company is not None or data.role == "Recruiter", role_sent=data.role is not None)
+        db.commit()
     return {"access_token": issue_token(user), "token_type": "bearer"}

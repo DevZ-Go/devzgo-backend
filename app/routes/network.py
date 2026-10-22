@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Set
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -28,7 +28,16 @@ from app.schemas.network import (
     ProjectPreview,
 )
 from app.services.pagination import paginate
-from app.services.social import display_name, notify, project_access, project_stats, visible_project_filter
+from app.services.social import (
+    audience_clause,
+    display_name,
+    may_comment,
+    maybe_like_milestone,
+    notify,
+    project_access,
+    project_stats,
+    visible_project_filter,
+)
 
 router = APIRouter(prefix="/network", tags=["Network"])
 
@@ -46,8 +55,10 @@ _FILTERS = {
 
 
 def _visible(viewer_id: Optional[UUID]):
-    """Activities about a project are only shown to people who may see that project."""
-    return or_(NetworkActivity.project_id.is_(None), NetworkActivity.project.has(visible_project_filter(viewer_id)))
+    """Activities about a project, or from a connections-only author, stay with people allowed to see them."""
+    project_ok = or_(NetworkActivity.project_id.is_(None), NetworkActivity.project.has(visible_project_filter(viewer_id)))
+    author_ok = audience_clause(NetworkActivity.user_id, "activity_visibility", "connections", viewer_id)
+    return and_(project_ok, author_ok)
 
 
 def _activity(db: Session, activity_id: UUID, viewer_id: Optional[UUID]) -> NetworkActivity:
@@ -203,6 +214,15 @@ def delete_post(activity_id: UUID, db: Session = Depends(get_db), current_user: 
     return {"message": "Post deleted"}
 
 
+@router.post("/activities/{activity_id}/share")
+def share_activity(activity_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    activity = _activity(db, activity_id, current_user.id)
+    notify(db, activity.user_id, current_user, "share", str(activity.id),
+           f"{display_name(current_user)} shared your post.", once=True)
+    db.commit()
+    return {"shared": True}
+
+
 @router.post("/activities/{activity_id}/like", response_model=ActivityLikeResponse, dependencies=[rate_limit("like", 60, 60)])
 def toggle_activity_like(activity_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     activity = _activity(db, activity_id, current_user.id)
@@ -214,8 +234,11 @@ def toggle_activity_like(activity_id: UUID, db: Session = Depends(get_db), curre
     else:
         try:
             db.add(ActivityLike(activity_id=activity_id, user_id=current_user.id))
+            db.flush()
+            likes_now = db.query(ActivityLike).filter(ActivityLike.activity_id == activity_id).count()
             notify(db, activity.user_id, current_user, "like", str(activity.id),
-                   f"{display_name(current_user)} liked your activity.", once=True)
+                   f"{display_name(current_user)} liked your post.", once=True)
+            maybe_like_milestone(db, activity.user_id, current_user, str(activity.id), likes_now, "post")
             db.commit()
         except IntegrityError:
             # A parallel request (e.g. double click) already inserted the like.
@@ -244,6 +267,8 @@ def add_activity_comment(activity_id: UUID, comment_data: ActivityCommentCreate,
     text = comment_data.comment_text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Comment cannot be empty")
+    if not may_comment(db, current_user.id, activity.user_id):
+        raise HTTPException(status_code=403, detail="This person only accepts comments from connections")
 
     comment = ActivityComment(activity_id=activity_id, author_id=current_user.id, comment_text=text)
     db.add(comment)

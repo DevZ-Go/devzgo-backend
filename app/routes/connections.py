@@ -25,7 +25,7 @@ from app.schemas.network import (
     ConnectionUserSummary,
 )
 from app.services.pagination import paginate
-from app.services.social import display_name, notify, user_summary
+from app.services.social import accepts_connection_requests, display_name, notify, user_summary
 
 router = APIRouter(prefix="/connections", tags=["Connections"])
 
@@ -135,6 +135,8 @@ def send_connection_request(data: ConnectionRequestCreate, db: Session = Depends
     target = db.query(User).filter(User.id == data.target_user_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="Target developer not found")
+    if not accepts_connection_requests(target):
+        raise HTTPException(status_code=403, detail="This person is not accepting connection requests")
 
     c = _pair(db, me.id, target.id)
     if c and c.status == "accepted":
@@ -207,7 +209,8 @@ def get_suggested_developers(limit: int = Query(5, ge=1, le=20), db: Session = D
                              me: User = Depends(get_current_user)):
     """People I have no connection row with (so declined users stay out), most mutual connections first."""
     rows = db.query(Connection.requester_id, Connection.receiver_id).filter(_mine(me.id)).all()
-    excluded = {b if a == me.id else a for a, b in rows} | {me.id}
+    hidden = {uid for (uid,) in db.query(UserProfile.user_id).filter(UserProfile.discoverable.is_(False)).all()}
+    excluded = {b if a == me.id else a for a, b in rows} | {me.id} | hidden
     partners = partner_ids(db, me.id)
     mutual = Counter()
     for a, b in db.query(Connection.requester_id, Connection.receiver_id).filter(

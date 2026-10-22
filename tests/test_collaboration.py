@@ -107,3 +107,19 @@ def test_expired_and_revoked_invitations(client, make_user):
     assert client.get("/collaborations/invitations/mine", headers=guest).json() == []
     assert client.put(f"/collaborations/invitations/{inv['id']}/accept", headers=guest).status_code == 400
     assert client.post(f"{_base(pid)}/invitations", headers=owner, json={"username": name}).status_code == 200
+
+
+def test_incoming_requests_list_only_the_owners_pending_ones(client, make_user):
+    owner, _ = make_user()
+    other, _ = make_user()
+    asker, _ = make_user()
+    mine = _project(client, owner, visibility="Public")
+    theirs = _project(client, other, visibility="Public")
+    req = client.post(f"{_base(mine)}/requests", headers=asker, json={"role": "Designer"}).json()
+    client.post(f"{_base(theirs)}/requests", headers=asker, json={})
+
+    incoming = client.get("/collaborations/requests/incoming", headers=owner).json()
+    assert [r["id"] for r in incoming] == [req["id"]]
+    assert incoming[0]["project_title"] == "Team"
+    assert client.put(f"/collaborations/requests/{req['id']}/decline", headers=owner).status_code == 200
+    assert client.get("/collaborations/requests/incoming", headers=owner).json() == []

@@ -26,7 +26,15 @@ from app.schemas.project import (
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.project_like import ProjectLike
-from app.services.social import can_view_project, display_name, notify, project_access, project_stats
+from app.services.social import (
+    can_view_project,
+    display_name,
+    maybe_like_milestone,
+    notify,
+    project_access,
+    project_stats,
+    public_project_filter,
+)
 from app.routes.workspace_upload import perform_workspace_zip_upload
 from app.services import storage
 from app.services.project_storage import delete_all_project_storage
@@ -79,6 +87,9 @@ def create_project(
     db.add(new_project)
     db.commit()
     db.refresh(new_project)
+    from app.services.skills import sync_skills_from_projects
+    sync_skills_from_projects(db, current_user)
+    db.commit()
 
     try:
         from app.models.network import NetworkActivity
@@ -137,9 +148,7 @@ def list_public_projects(
     - sort_by: newest, oldest, updated, title_asc, or title_desc
     """
 
-    query = db.query(Project).filter(
-        Project.visibility == ProjectVisibility.PUBLIC
-    )
+    query = db.query(Project).filter(public_project_filter(current_user.id if current_user else None))
 
     # ---------------- SEARCH ----------------
     if search and search.strip():
@@ -504,6 +513,19 @@ def _likeable_project(db: Session, project_id: UUID, user: User) -> Project:
     return project
 
 
+@router.post("/{project_id}/share")
+def share_project(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = _likeable_project(db, project_id, current_user)
+    notify(db, project.owner_id, current_user, "project_share", str(project_id),
+           f"{display_name(current_user)} shared your project \"{project.title}\".", once=True)
+    db.commit()
+    return {"shared": True}
+
+
 @router.post("/{project_id}/like", response_model=ProjectLikeResponse)
 def like_project(
     project_id: UUID,
@@ -514,8 +536,11 @@ def like_project(
     if not db.query(ProjectLike.id).filter_by(project_id=project_id, user_id=current_user.id).first():
         try:
             db.add(ProjectLike(project_id=project_id, user_id=current_user.id))
+            db.flush()
+            likes_now = db.query(ProjectLike).filter(ProjectLike.project_id == project_id).count()
             notify(db, project.owner_id, current_user, "project_like", str(project_id),
                    f"{display_name(current_user)} liked your project \"{project.title}\".", once=True)
+            maybe_like_milestone(db, project.owner_id, current_user, str(project_id), likes_now, "project")
             db.commit()
         except IntegrityError:
             # A parallel request already stored this like.
@@ -585,6 +610,8 @@ def update_project(
     else:
         project.tech_stacks = []
 
+    from app.services.skills import sync_skills_from_projects
+    sync_skills_from_projects(db, project.owner)
     db.commit()
     db.refresh(project)
 
@@ -685,6 +712,7 @@ def build_project_response(
         visibility=project.visibility,
         cover_image_url=project.cover_image_url,
         demo_video_url=project.demo_video_url,
+        github_url=project.github_url,
         created_at=project.created_at,
         updated_at=project.updated_at,
         owner_username=owner_username,

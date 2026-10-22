@@ -24,10 +24,11 @@ def is_zip_symlink(member: zipfile.ZipInfo) -> bool:
     return stat.S_ISLNK(mode)
 
 
-def safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
+def safe_extract_zip(zip_path: Path, dest_dir: Path, skip_symlinks: bool = False) -> None:
     """
     Extract archive under dest_dir; block zip-slip, symlinks, and size bombs.
     Each member is resolved and must stay under dest_dir.resolve().
+    With skip_symlinks, symlink entries are left out instead of rejecting the archive.
     """
     dest_dir = dest_dir.resolve()
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -47,6 +48,8 @@ def safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
                 continue
 
             if is_zip_symlink(member):
+                if skip_symlinks:
+                    continue
                 raise HTTPException(
                     status_code=400,
                     detail="ZIP contains symlink entries, which are not allowed",

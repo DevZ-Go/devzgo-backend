@@ -40,6 +40,7 @@ from app.routes.analytics import router as analytics_router
 from app.routes.media import router as media_router
 from app.routes.realtime import router as realtime_router
 from app.routes.github_auth import router as github_auth_router
+from app.routes.github_import import router as github_import_router
 from app.routes.wraps import router as wraps_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
@@ -77,13 +78,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Public media only. Do not expose storage/project_<uuid>/ (private workspaces).
+# Public media only: covers, videos, and profile photos. Do not expose storage/project_<uuid>/.
 if storage.is_s3():
     @app.get("/storage/{kind}/{name}", include_in_schema=False)
-    def media_redirect(kind: Literal["covers", "videos"], name: str):
+    def media_redirect(kind: Literal["covers", "videos", "avatars", "resumes"], name: str):
         return RedirectResponse(storage.url(f"{kind}/{name}"))
 else:
-    for kind in ("covers", "videos"):
+    for kind in ("covers", "videos", "avatars", "resumes"):
         (storage.ROOT / kind).mkdir(parents=True, exist_ok=True)
         app.mount(f"/storage/{kind}", StaticFiles(directory=str(storage.ROOT / kind)), name=f"storage_{kind}")
 app.include_router(media_router)
@@ -94,6 +95,7 @@ Base.metadata.create_all(bind=engine)
 app.add_exception_handler(ApiError, api_error_handler)
 app.include_router(auth_router)
 app.include_router(github_auth_router)
+app.include_router(github_import_router)
 app.include_router(projects_router)
 app.include_router(project_comments_router)
 app.include_router(network_router)

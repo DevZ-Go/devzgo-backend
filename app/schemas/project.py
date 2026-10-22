@@ -92,6 +92,7 @@ class ProjectResponse(BaseModel):
 
     cover_image_url: Optional[str] = None
     demo_video_url: Optional[str] = None
+    github_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

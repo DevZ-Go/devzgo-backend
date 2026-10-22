@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, selectinload
@@ -9,13 +9,26 @@ from uuid import UUID
 from app.db.session import get_db
 from app.models.user import User
 from app.models.message import Message
+from app.models.chat import ChatMember, ChatRoom, RoomMessage
 from app.core.dependencies import get_current_user
-from app.services.social import display_name, notify, user_summary
+from app.services.social import display_name, may_message, notify, user_summary
+from app.services.chat_rooms import (
+    connected,
+    latest_preview,
+    post_room_message,
+    room_for_member,
+    sync_my_project_rooms,
+    unread_count,
+)
 from app.realtime.broadcaster import broadcaster, queue_event
 from app.schemas.network import (
+    ChatRoomCreate,
+    ChatRoomSummary,
+    ConversationResponse,
     MessageCreate,
     MessageResponse,
-    ConversationResponse,
+    RoomMessageCreate,
+    RoomMessageResponse,
 )
 
 router = APIRouter(prefix="/messages", tags=["Messages"])
@@ -108,8 +121,11 @@ def send_message(
     if msg_data.receiver_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot send message to yourself")
 
-    if not db.query(User.id).filter(User.id == msg_data.receiver_id).first():
+    recipient = db.query(User).options(selectinload(User.profile)).filter(User.id == msg_data.receiver_id).first()
+    if not recipient:
         raise HTTPException(status_code=404, detail="Recipient developer not found")
+    if not may_message(db, current_user.id, recipient):
+        raise HTTPException(status_code=403, detail="This person only accepts messages from connections")
 
     content = msg_data.content.strip()
     if not content:
@@ -155,3 +171,113 @@ def get_unread_messages_count(
         Message.read.is_(False),
     ).count()
     return {"unread_count": count}
+
+
+def _room_summary(db: Session, room: ChatRoom, me: UUID) -> ChatRoomSummary:
+    mine = next((m for m in room.members if m.user_id == me), None)
+    last = latest_preview(db, room.id)
+    return ChatRoomSummary(
+        id=room.id,
+        title=room.title,
+        project_id=room.project_id,
+        member_count=len(room.members),
+        unread_count=unread_count(db, room.id, me, mine.last_read_at if mine else None),
+        last_message=last.content if last else None,
+        last_at=last.created_at if last else None,
+    )
+
+
+def _room_message(msg: RoomMessage, viewer: UUID) -> RoomMessageResponse:
+    sender = msg.sender
+    return RoomMessageResponse(
+        id=msg.id,
+        room_id=msg.room_id,
+        sender_id=msg.sender_id,
+        sender_username=sender.username if sender else "developer",
+        sender_name=display_name(sender) if sender else "Developer",
+        content=msg.content,
+        created_at=msg.created_at,
+        is_outgoing=msg.sender_id == viewer,
+    )
+
+
+@router.get("/groups", response_model=List[ChatRoomSummary])
+def list_groups(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    sync_my_project_rooms(db, current_user.id)
+    db.commit()
+    rooms = (
+        db.query(ChatRoom)
+        .options(selectinload(ChatRoom.members))
+        .join(ChatMember, ChatMember.room_id == ChatRoom.id)
+        .filter(ChatMember.user_id == current_user.id)
+        .all()
+    )
+    summaries = [_room_summary(db, room, current_user.id) for room in rooms]
+    summaries.sort(key=lambda r: r.last_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return summaries
+
+
+@router.post("/groups", response_model=ChatRoomSummary)
+def create_group(data: ChatRoomCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    member_ids = {uid for uid in data.member_ids if uid != current_user.id}
+    if not member_ids:
+        raise HTTPException(status_code=400, detail="Pick at least one other person")
+    for uid in member_ids:
+        if not db.query(User.id).filter(User.id == uid).first():
+            raise HTTPException(status_code=404, detail="One of those people could not be found")
+        if not connected(db, current_user.id, uid):
+            raise HTTPException(status_code=400, detail="You can only start a group with people you're connected to")
+    room = ChatRoom(title=data.title.strip()[:120], created_by=current_user.id)
+    db.add(room)
+    db.flush()
+    for uid in member_ids | {current_user.id}:
+        db.add(ChatMember(room_id=room.id, user_id=uid))
+    db.commit()
+    db.refresh(room)
+    room = db.query(ChatRoom).options(selectinload(ChatRoom.members)).filter(ChatRoom.id == room.id).one()
+    for uid in member_ids:
+        queue_event(db, uid, {"type": "message.room", "room_id": str(room.id)})
+    db.commit()
+    return _room_summary(db, room, current_user.id)
+
+
+@router.get("/groups/{room_id}", response_model=List[RoomMessageResponse])
+def group_thread(
+    room_id: UUID,
+    before: Optional[datetime] = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    room_for_member(db, room_id, current_user.id)
+    query = db.query(RoomMessage).options(selectinload(RoomMessage.sender)).filter(RoomMessage.room_id == room_id)
+    if before:
+        query = query.filter(RoomMessage.created_at < before)
+    rows = query.order_by(desc(RoomMessage.created_at)).limit(limit).all()[::-1]
+    if not before:
+        db.query(ChatMember).filter(
+            ChatMember.room_id == room_id, ChatMember.user_id == current_user.id
+        ).update({"last_read_at": datetime.now(timezone.utc)})
+        db.commit()
+    return [_room_message(m, current_user.id) for m in rows]
+
+
+@router.post("/groups/{room_id}", response_model=RoomMessageResponse)
+def send_group_message(
+    room_id: UUID,
+    data: RoomMessageCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    room = room_for_member(db, room_id, current_user.id)
+    content = data.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    msg = post_room_message(db, room, current_user, content)
+    db.query(ChatMember).filter(ChatMember.room_id == room.id, ChatMember.user_id == current_user.id).update(
+        {"last_read_at": datetime.now(timezone.utc)}
+    )
+    db.commit()
+    db.refresh(msg)
+    msg.sender = current_user
+    return _room_message(msg, current_user.id)
