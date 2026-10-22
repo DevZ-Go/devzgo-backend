@@ -14,6 +14,7 @@ from pathlib import Path
 
 from app.services.project_analysis import EXT_TO_LANGUAGE, PROSE_AND_DATA, AnalysisResult
 from app.services.workspace_extract import GENERATED_DIRS, is_generated, is_os_junk
+from app.services.workspace_files import is_secret_path
 
 FACTS_VERSION = 1
 
@@ -64,10 +65,6 @@ DEPLOY_FILES = frozenset({
 CI_FILES = frozenset({".gitlab-ci.yml", ".travis.yml", "jenkinsfile", "azure-pipelines.yml", "bitbucket-pipelines.yml"})
 DOCKER_FILES = frozenset({"dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"})
 ENV_EXAMPLES = re.compile(r"^\.env\.(?:example|sample|template|dist|defaults)$|^(?:example|sample)\.env$", re.I)
-SECRET_FILES = frozenset({".env", ".env.local", ".env.development", ".env.production", ".env.staging", ".env.test",
-                          "credentials.json", "secrets.json", "secret.json", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
-                          "service-account.json", "serviceaccountkey.json"})
-SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
 KNOWN_DIRS = frozenset({
     "src", "app", "lib", "libs", "components", "pages", "routes", "services", "models", "controllers", "views",
     "api", "server", "client", "frontend", "backend", "core", "utils", "helpers", "hooks", "features", "modules",
@@ -132,7 +129,7 @@ def _is_secret_file(name: str) -> bool:
     lower = name.lower()
     if ENV_EXAMPLES.match(lower):
         return False
-    return lower in SECRET_FILES or lower.startswith(".env.") or lower.endswith(SECRET_SUFFIXES)
+    return is_secret_path(lower)
 
 
 def _readme_facts(path: Path, rel: str) -> dict:

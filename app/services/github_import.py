@@ -182,6 +182,20 @@ def get_readme(token: str, full_name: str) -> str | None:
         return res.text
 
 
+def head_commit_sha(token: str, full_name: str, ref: str) -> str | None:
+    """The commit at ref, or None when GitHub has none or cannot be reached."""
+    try:
+        with _client(token) as client:
+            response = client.get(
+                f"/repos/{full_name}/commits/{ref}",
+                headers={"Accept": "application/vnd.github.sha"},
+            )
+    except httpx.HTTPError:
+        return None
+    sha = (response.text or "").strip()
+    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
 def download_archive(token: str, full_name: str, ref: str, dest: Path) -> bool:
     """Save the repo's zip archive to dest. False when the repo has no commits yet."""
     with _client(token) as gh, gh.stream("GET", f"/repos/{full_name}/zipball/{ref}") as res:

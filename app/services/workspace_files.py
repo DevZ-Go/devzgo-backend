@@ -113,10 +113,12 @@ SECRET_FILENAMES = frozenset(
         "id_ed25519",
         "id_ecdsa",
         "id_dsa",
+        "service-account.json",
+        "serviceaccountkey.json",
     }
 )
 
-SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks")
 SECRET_NAME_PREFIXES = (".env.",)
 
 
@@ -161,6 +163,56 @@ def read_workspace_file(project_id: UUID, relative: str) -> bytes:
     if storage.is_s3():
         return storage.read(f"project_{project_id}/{relative}")
     return resolve_workspace_file(project_id, relative).read_bytes()
+
+
+def _key(project_id: UUID, relative: str) -> str:
+    return f"project_{project_id}/{relative}"
+
+
+def workspace_file_size(project_id: UUID, relative: str) -> int:
+    if storage.is_s3():
+        return storage.size(_key(project_id, relative))
+    return resolve_workspace_file(project_id, relative).stat().st_size
+
+
+def iter_workspace_file(project_id: UUID, relative: str, start: int, end: int,
+                        chunk: int = 64 * 1024):
+    """Bytes start..end (inclusive), streamed in chunks."""
+    if storage.is_s3():
+        yield from storage.iter_range(_key(project_id, relative), start, end, chunk)
+        return
+    with open(resolve_workspace_file(project_id, relative), "rb") as handle:
+        handle.seek(start)
+        left = end - start + 1
+        while left > 0:
+            data = handle.read(min(chunk, left))
+            if not data:
+                break
+            left -= len(data)
+            yield data
+
+
+def read_workspace_head(project_id: UUID, relative: str, size: int, length: int = 4096) -> bytes:
+    if size <= 0:
+        return b""
+    return b"".join(iter_workspace_file(project_id, relative, 0, min(size, length) - 1))
+
+
+def write_workspace_bytes(project_id: UUID, relative: str, data: bytes) -> None:
+    """Replace one stored file. The path must already be normalized."""
+    import io
+    if storage.is_s3():
+        storage.save(_key(project_id, relative), io.BytesIO(data))
+        return
+    root = workspace_dir_for_project(project_id).resolve()
+    target = root.joinpath(*Path(relative).parts)
+    if target.is_symlink():
+        raise ValueError("Symlinks are not allowed")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    if not target.resolve().is_relative_to(root):
+        target.unlink(missing_ok=True)
+        raise ValueError("Invalid file path")
 
 
 def extension_of(path: str) -> str:

@@ -10,6 +10,11 @@ import os
 import uuid
 from pathlib import Path
 
+# Tests only. A real server must set its own key; this one is 32 zero bytes.
+# setdefault would keep an empty value passed in by Compose, which is not a key.
+if not os.environ.get("GITHUB_TOKEN_ENCRYPTION_KEY") and not os.environ.get("WORKSPACE_TOKEN_KEY"):
+    os.environ["GITHUB_TOKEN_ENCRYPTION_KEY"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
 import pytest
 
 TEST_DB = os.getenv("TEST_DATABASE_URL", "")

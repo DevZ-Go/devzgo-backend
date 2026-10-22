@@ -49,6 +49,7 @@ def fake_github(monkeypatch):
     monkeypatch.setattr(gh, "get_repo", lambda token, rid: repos.get(rid))
     monkeypatch.setattr(gh, "get_readme", lambda token, full: "# Title\n\n![badge](x.svg) A **great** [project](http://x).\n")
     monkeypatch.setattr(gh, "download_archive", archive)
+    monkeypatch.setattr(gh, "head_commit_sha", lambda token, full, ref: None if full.endswith("empty-repo") else "a" * 40)
     monkeypatch.setattr(gh, "repo_activity", lambda token, full: {"commits": 12, "pushes": 3})
     monkeypatch.setattr(gh, "repo_by_name", lambda token, full: next((r for r in repos.values() if r["full_name"] == full), None))
     monkeypatch.setattr(history, "fetch", lambda token, full: {"viewer": None, "stats": None, "commits": [], "pushes": []})
@@ -103,6 +104,10 @@ def test_import_creates_projects_matching_github_visibility(client, make_user, f
     project = client.get(f"/projects/{first['project_id']}", headers=headers).json()
     assert project["category"] == "Web Development"
     assert project["github_url"] == "https://github.com/octo/shop-api"
+    assert project["source"]["kind"] == "github"
+    assert project["source"]["repository"] == "octo/shop-api"
+    assert project["source"]["snapshot"]["commit_sha"] == "a" * 40
+    assert project["source"]["sync_state"] == "ok"
     assert project["full_description"] == "Title\n\nA great project."
     files = client.get(f"/projects/{first['project_id']}/files", headers=headers).json()
     assert "main.py" in {f["file_path"] for f in files}

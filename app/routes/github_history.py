@@ -107,6 +107,9 @@ def refresh(project_id: UUID, data: RefreshRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=502, detail="GitHub did not respond. Try again in a moment.")
     if repo is None:
         raise HTTPException(status_code=404, detail="GitHub could not find this repository with your account")
+    project.github_repo_id = repo.get("id") or project.github_repo_id
+    project.github_full_name = (repo.get("full_name") or full_name)[:200]
+    project.github_default_branch = repo.get("default_branch") or project.github_default_branch
     total = gh.repo_activity(token, full_name)["commits"]
     if not history.capture(db, project, token, full_name, total):
         raise HTTPException(status_code=502, detail="GitHub did not respond. Try again in a moment.")

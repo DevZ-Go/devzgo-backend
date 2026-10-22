@@ -48,6 +48,10 @@ from app.routes.activity_log import router as activity_log_router
 from app.routes.evidence import router as evidence_router
 from app.routes.matching import router as matching_router
 from app.routes.challenges import router as challenges_router
+from app.routes.file_preview import router as file_preview_router
+from app.routes.github_connection import callback_router as github_app_callback_router
+from app.routes.github_connection import router as github_connection_router
+from app.routes.workspace import router as workspace_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -119,11 +123,29 @@ app.include_router(activity_log_router)
 app.include_router(evidence_router)
 app.include_router(matching_router)
 app.include_router(challenges_router)
+app.include_router(file_preview_router)
+app.include_router(github_connection_router)
+app.include_router(github_app_callback_router)
+app.include_router(workspace_router)
+
+
+def _sweep_workspace() -> None:
+    """Drop expired drafts and fail sync jobs that were left running. A missing table must not stop the API."""
+    from app.db.session import SessionLocal
+    from app.services import workspace_drafts, workspace_sync
+
+    with SessionLocal() as db:
+        workspace_drafts.drop_expired(db)
+        workspace_sync.recover(db)
 
 
 @app.on_event("startup")
 async def start_realtime():
     await broadcaster.start()
+    try:
+        await asyncio.to_thread(_sweep_workspace)
+    except Exception:
+        pass
     if os.getenv("WRAP_JOB", "on").lower() != "off":
         asyncio.create_task(_store_finished_wraps())
 

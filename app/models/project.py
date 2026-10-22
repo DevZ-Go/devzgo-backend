@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Table, Text, true
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Table, Text, true
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
@@ -37,6 +37,19 @@ class Project(Base):
 
     # Extended project analysis & collaboration fields
     github_url = Column(String, nullable=True)
+    # zip or github. The stored files are a snapshot; GitHub remains the source of truth for a linked repo.
+    source_kind = Column(String(16), nullable=False, default="zip", server_default="zip")
+    github_repo_id = Column(BigInteger, nullable=True)
+    github_full_name = Column(String(200), nullable=True)
+    github_default_branch = Column(String(255), nullable=True)
+    github_tracked_branch = Column(String(255), nullable=True)
+    snapshot_origin = Column(String(16), nullable=True)
+    snapshot_ref = Column(String(255), nullable=True)
+    snapshot_commit_sha = Column(String(40), nullable=True)
+    snapshot_synced_at = Column(DateTime(timezone=True), nullable=True)
+    sync_state = Column(String(16), nullable=True)
+    sync_error = Column(String(300), nullable=True)
+    sync_updated_at = Column(DateTime(timezone=True), nullable=True)
     github_commit_count = Column(Integer, nullable=True)  # repository total at the last import or refresh
     github_push_count = Column(Integer, nullable=True)  # push events stored for this repository
     github_pushed_at = Column(DateTime(timezone=True), nullable=True)

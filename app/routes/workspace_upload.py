@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session
 from app.models.file import File as FileRecord
 from app.models.project import Project
 from app.models.user import User
-from app.services import source_facts, storage
+from app.services import source_facts, source_state, storage
+from app.services.file_types import classify
 from app.services.social import project_access
 from app.services.project_analysis import (
     AnalysisResult,
@@ -112,6 +113,9 @@ def build_file_records_from_workspace(
                 continue
             rel_file = rel_parent / fname if rel_parent != Path(".") else Path(fname)
             posix_file = rel_file.as_posix()
+            size = abs_file.stat().st_size
+            with open(abs_file, "rb") as handle:
+                head = handle.read(4096)
             rows.append(
                 FileRecord(
                     project_id=project_id,
@@ -119,6 +123,8 @@ def build_file_records_from_workspace(
                     file_path=posix_file,
                     is_directory=False,
                     parent_path=_parent_path_for_relative(rel_file),
+                    size_bytes=size,
+                    kind=classify(posix_file, head).kind,
                 )
             )
             file_count += 1
@@ -247,23 +253,50 @@ def reanalyse_source(db: Session, project: Project) -> bool:
     return True
 
 
-def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_github: bool = False) -> dict:
+def _restore_local(final: Path, previous: Path, incoming: Path, swapped: bool) -> None:
+    """Put the previous tree back when a swap did not finish. A failed extract never touches the live tree."""
+    if incoming.exists():
+        shutil.rmtree(incoming, ignore_errors=True)
+    if not previous.exists():
+        return
+    if swapped or not final.exists():
+        if final.exists():
+            shutil.rmtree(final, ignore_errors=True)
+        if not final.exists():
+            previous.rename(final)
+
+
+def install_workspace_zip(
+    db: Session,
+    project: Project,
+    zip_path: Path,
+    from_github: bool = False,
+    ref: str | None = None,
+    commit_sha: str | None = None,
+) -> dict:
     """Replace the project's workspace with the archive, rebuild the files table, analyse, and commit.
 
-    Extracting, analysing and copying to the bucket happen before any database write, so the
-    transaction stays short and no connection sits idle while files upload.
+    The new tree is extracted beside the current one and swapped in only after extraction succeeds.
+    A failed ZIP leaves the previous files in place. Sync state is committed on its own, so a
+    rolled-back upload still shows as failed.
     """
     project_id = project.id
-    db.commit()
+    source_state.mark(db, project_id, source_state.PENDING)
     in_bucket = storage.is_s3()
-    workspace_root = (
-        Path(tempfile.mkdtemp(prefix="workspace_")) / "w" if in_bucket else workspace_dir_for_project(project_id)
-    )
+    final = workspace_dir_for_project(project_id)
+    incoming = final.with_name(final.name + ".incoming")
+    previous = final.with_name(final.name + ".previous")
+    workspace_root = Path(tempfile.mkdtemp(prefix="workspace_")) / "w" if in_bucket else incoming
+    swapped = False
 
     try:
-        if workspace_root.exists():
-            shutil.rmtree(workspace_root)
-        workspace_root.mkdir(parents=True, exist_ok=True)
+        if in_bucket:
+            workspace_root.mkdir(parents=True, exist_ok=True)
+        else:
+            if incoming.exists():
+                shutil.rmtree(incoming)
+            incoming.parent.mkdir(parents=True, exist_ok=True)
+            incoming.mkdir()
 
         safe_extract_zip(zip_path, workspace_root, skip_symlinks=from_github)
         if from_github:
@@ -271,24 +304,31 @@ def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_gi
 
         result = analyze_workspace(workspace_root)
         facts = source_facts.collect(workspace_root, result, zip_path)
-        new_rows, total_files = build_file_records_from_workspace(
-            project_id, workspace_root
-        )
+        new_rows, total_files = build_file_records_from_workspace(project_id, workspace_root)
 
         if in_bucket:
             storage.delete_prefix(f"project_{project_id}/")
             storage.upload_dir(workspace_root, f"project_{project_id}")
             with open(zip_path, "rb") as original:
                 storage.save(f"sources/{project_id}.zip", original)
+        else:
+            if previous.exists():
+                shutil.rmtree(previous)
+            if final.exists():
+                final.rename(previous)
+            incoming.rename(final)
+            swapped = True
+            workspace_root = final
 
-        db.query(FileRecord).filter(FileRecord.project_id == project_id).delete(
-            synchronize_session=False
-        )
+        db.query(FileRecord).filter(FileRecord.project_id == project_id).delete(synchronize_session=False)
         db.add_all(new_rows)
         project = db.query(Project).filter(Project.id == project_id).one()
         analysis = apply_analysis_to_project(db, project, workspace_root, result)
         _record_facts(project, facts)
+        source_state.record_snapshot(project, "github" if from_github else "zip", ref=ref, commit_sha=commit_sha)
         db.commit()
+        if not in_bucket and previous.exists():
+            shutil.rmtree(previous, ignore_errors=True)
 
         return {
             "message": "Workspace uploaded successfully",
@@ -298,8 +338,18 @@ def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_gi
             "languages": analysis["languages"],
             "applied_to_confirmed": analysis["applied_to_confirmed"],
         }
+    except HTTPException as exc:
+        db.rollback()
+        if not in_bucket:
+            _restore_local(final, previous, incoming, swapped)
+        detail = exc.detail if isinstance(exc.detail, str) else source_state.GENERIC_FAILURE
+        source_state.mark(db, project_id, source_state.FAILED, detail)
+        raise
     except Exception:
         db.rollback()
+        if not in_bucket:
+            _restore_local(final, previous, incoming, swapped)
+        source_state.mark(db, project_id, source_state.FAILED, source_state.GENERIC_FAILURE)
         raise
     finally:
         if in_bucket:
