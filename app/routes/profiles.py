@@ -27,7 +27,7 @@ from app.core.dependencies import get_current_user, get_current_user_optional
 from app.schemas.network import (
     CollabGroup,
     ConnectionUserSummary,
-    ProjectPreview,
+    JoinedProject,
     Standing,
     TalentCard,
     UserProfileResponse,
@@ -35,7 +35,9 @@ from app.schemas.network import (
 )
 from app.schemas.project import ProjectResponse
 from app.services.roles import assign_identity
-from app.services.talent import SORTS, field_top, groups_for, projects_for, standing_for, talent_board
+from app.services.talent import (
+    SORTS, field_top, groups_for, joined_for, joined_project, projects_for, standing_for, talent_board,
+)
 AVATAR_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
 OWN_SETTINGS = (
     "profile_visibility", "message_policy", "comment_policy", "activity_visibility",
@@ -284,7 +286,7 @@ def get_user_profile(
     return _build_profile_response(user, viewer_id, db)
 
 
-@router.get("/{user_id}/collaborations", response_model=List[ProjectPreview])
+@router.get("/{user_id}/collaborations", response_model=List[JoinedProject])
 def get_user_collaborations(
     user_id: UUID,
     db: Session = Depends(get_db),
@@ -292,16 +294,9 @@ def get_user_collaborations(
 ):
     """Projects this person joined (accepted memberships only) that the viewer is allowed to see."""
     viewer_id = current_user.id if current_user else None
-    rows = (db.query(Project, ProjectCollaborator.role)
-            .join(ProjectCollaborator, ProjectCollaborator.project_id == Project.id)
-            .options(selectinload(Project.owner), selectinload(Project.tech_stacks))
-            .filter(ProjectCollaborator.user_id == user_id, visible_project_filter(viewer_id))
-            .order_by(ProjectCollaborator.created_at.desc()).all())
+    rows = joined_for(db, user_id, viewer_id)
     stats = project_stats(db, [p.id for p, _ in rows], viewer_id)
-    return [ProjectPreview(id=p.id, title=p.title, short_description=p.short_description, cover_image_url=p.cover_image_url,
-                           tech_stacks=[t.name for t in p.tech_stacks], category=str(p.category.value if hasattr(p.category, "value") else p.category),
-                           contribution_info=role, owner_username=p.owner.username, **stats[p.id])
-            for p, role in rows]
+    return [joined_project(p, membership, stats[p.id]) for p, membership in rows]
 
 
 @router.get("/{user_id}/projects", response_model=List[ProjectResponse])

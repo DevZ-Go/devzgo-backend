@@ -56,14 +56,37 @@ def projects_for(db: Session, subject_id: UUID, viewer_id: UUID | None) -> list[
     )
 
 
+def _member(user: User, role: str, access: str, focus: str | None = None) -> dict:
+    profile = user.profile
+    return {
+        "user_id": user.id,
+        "username": user.username,
+        "full_name": profile.full_name if profile else None,
+        "avatar_url": profile.avatar_url if profile else None,
+        "role": role,
+        "access": access,
+        "focus": focus,
+    }
+
+
+def _team(project: Project) -> list[dict]:
+    members = [_member(project.owner, "Owner", "owner", project.owner_focus)]
+    members += [_member(c.user, c.role, c.access, c.focus) for c in project.collaborators if c.user]
+    return members
+
+
+def _team_query(db: Session):
+    return db.query(Project).options(
+        selectinload(Project.owner).selectinload(User.profile),
+        selectinload(Project.tech_stacks),
+        selectinload(Project.collaborators).selectinload(ProjectCollaborator.user).selectinload(User.profile),
+    )
+
+
 def groups_for(db: Session, subject_id: UUID, viewer_id: UUID | None) -> list[dict]:
     """Teams (a project plus its members) this person owns or has joined, limited to what the viewer may see."""
     rows = (
-        db.query(Project)
-        .options(
-            selectinload(Project.owner),
-            selectinload(Project.collaborators).selectinload(ProjectCollaborator.user),
-        )
+        _team_query(db)
         .filter(
             or_(
                 Project.owner_id == subject_id,
@@ -81,16 +104,54 @@ def groups_for(db: Session, subject_id: UUID, viewer_id: UUID | None) -> list[di
             role = "Owner"
         else:
             role = next((c.role for c in project.collaborators if c.user_id == subject_id), "Collaborator")
-        members = [{"username": project.owner.username, "role": "Owner"}]
-        members += [{"username": c.user.username, "role": c.role} for c in project.collaborators if c.user]
         groups.append({
             "project_id": project.id,
             "title": project.title,
             "visibility": project.visibility.value if hasattr(project.visibility, "value") else str(project.visibility),
             "role": role,
-            "members": members,
+            "members": _team(project),
         })
     return groups
+
+
+def joined_for(db: Session, subject_id: UUID, viewer_id: UUID | None) -> list[tuple[Project, ProjectCollaborator]]:
+    """Projects this person joined (accepted memberships only) that the viewer may open, newest membership first."""
+    rows = (
+        _team_query(db)
+        .join(ProjectCollaborator, ProjectCollaborator.project_id == Project.id)
+        .filter(ProjectCollaborator.user_id == subject_id, visible_project_filter(viewer_id))
+        .order_by(ProjectCollaborator.created_at.desc())
+        .all()
+    )
+    return [(p, next(c for c in p.collaborators if c.user_id == subject_id)) for p in rows]
+
+
+def joined_project(project: Project, membership: ProjectCollaborator, stats: dict) -> dict:
+    category = project.category.value if hasattr(project.category, "value") else project.category
+    visibility = project.visibility.value if hasattr(project.visibility, "value") else project.visibility
+    owner = project.owner
+    return {
+        "id": project.id,
+        "title": project.title,
+        "short_description": project.short_description,
+        "cover_image_url": project.cover_image_url,
+        "tech_stacks": [t.name for t in project.tech_stacks],
+        "category": str(category) if category else None,
+        "github_url": project.github_url,
+        "contribution_info": membership.role,
+        "owner_username": owner.username,
+        "owner_avatar_url": owner.profile.avatar_url if owner.profile else None,
+        "visibility": str(visibility) if visibility else None,
+        "access": membership.access,
+        "focus": membership.focus,
+        "joined_at": membership.created_at,
+        "languages": [
+            {"name": row["name"], "percentage": float(row.get("percentage") or 0)}
+            for row in (project.language_stats or []) if isinstance(row, dict) and row.get("name")
+        ][:6],
+        "team": _team(project),
+        **stats,
+    }
 
 
 def _languages(projects: list[Project]) -> list[dict]:

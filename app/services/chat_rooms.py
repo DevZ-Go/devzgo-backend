@@ -79,6 +79,26 @@ def sync_my_project_rooms(db: Session, me: UUID) -> None:
         sync_project_room(db, project)
 
 
+def room_admins(db: Session, room: ChatRoom) -> set[UUID]:
+    """Who runs a group: the starter of a custom group, or a project's owner and Managers."""
+    if room.project_id is None:
+        return {room.created_by}
+    project = db.query(Project).filter(Project.id == room.project_id).first()
+    if project is None:
+        return {room.created_by}
+    managers = db.query(ProjectCollaborator.user_id).filter(
+        ProjectCollaborator.project_id == project.id, ProjectCollaborator.access == "manager"
+    )
+    return {project.owner_id, *(row[0] for row in managers)}
+
+
+def notify_room(db: Session, room: ChatRoom, skip: UUID | None = None) -> None:
+    """Tell members to refresh the room after its details or members change."""
+    for member in room.members:
+        if member.user_id != skip:
+            queue_event(db, member.user_id, {"type": "message.room", "room_id": str(room.id)})
+
+
 def room_for_member(db: Session, room_id: UUID, me: UUID) -> ChatRoom:
     from fastapi import HTTPException
 

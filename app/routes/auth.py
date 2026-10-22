@@ -105,10 +105,12 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
-    user = db.query(User).filter(func.lower(User.email) == form_data.username.strip().lower()).first()
+    login_id = form_data.username.strip().lower().removeprefix("@")
+    column = User.email if "@" in login_id else User.username
+    user = db.query(User).filter(func.lower(column) == login_id).first()
 
     if not user or not user.password_hash or not verify_password(form_data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="Invalid email, username or password")
 
     return {"access_token": issue_token(user), "token_type": "bearer"}
 
