@@ -81,6 +81,8 @@ def create_project(
         visibility=project_data.visibility,
         cover_image_url=project_data.cover_image_url,
         comments_enabled=project_data.comments_enabled is not False,
+        live_url=project_data.live_url or None,
+        impact_note=project_data.impact_note or None,
     )
 
     new_project.tech_stacks = tech_stacks
@@ -597,6 +599,10 @@ def update_project(
     project.visibility = project_update.visibility
     project.cover_image_url = project_update.cover_image_url
     project.demo_video_url = project_update.demo_video_url
+    if "live_url" in project_update.model_fields_set:
+        project.live_url = project_update.live_url or None
+    if "impact_note" in project_update.model_fields_set:
+        project.impact_note = project_update.impact_note or None
     if project_update.comments_enabled is not None:
         project.comments_enabled = project_update.comments_enabled
 
@@ -714,6 +720,9 @@ def build_project_response(
         cover_image_url=project.cover_image_url,
         demo_video_url=project.demo_video_url,
         github_url=project.github_url,
+        live_url=project.live_url,
+        impact_note=project.impact_note,
+        source_analyzed_at=project.source_analyzed_at,
         created_at=project.created_at,
         updated_at=project.updated_at,
         owner_username=owner_username,

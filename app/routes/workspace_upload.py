@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.models.file import File as FileRecord
 from app.models.project import Project
 from app.models.user import User
-from app.services import storage
+from app.services import source_facts, storage
 from app.services.social import project_access
 from app.services.project_analysis import (
     AnalysisResult,
@@ -206,6 +207,46 @@ def _lift_single_root(workspace_root: Path) -> None:
     wrapper.rmdir()
 
 
+def _record_facts(project: Project, facts: dict) -> None:
+    project.source_facts = facts
+    project.source_analyzed_at = datetime.now(timezone.utc)
+    project.source_facts_version = source_facts.FACTS_VERSION
+
+
+def reanalyse_source(db: Session, project: Project) -> bool:
+    """Record source facts again from the stored copy of the last upload or import.
+
+    Files, languages and confirmed tech stay as they are. False when no stored copy exists.
+    """
+    project_id = project.id
+    with tempfile.TemporaryDirectory(prefix="reanalyse_") as tmp:
+        zip_path: Path | None = None
+        if storage.is_s3():
+            try:
+                data = storage.read(f"sources/{project_id}.zip")
+            except FileNotFoundError:
+                return False
+            zip_path = Path(tmp) / "source.zip"
+            zip_path.write_bytes(data)
+            root = Path(tmp) / "w"
+            root.mkdir()
+            safe_extract_zip(zip_path, root, skip_symlinks=True)
+            entries = list(root.iterdir())
+            if len(entries) == 1 and entries[0].is_dir() and not db.query(FileRecord.id).filter(
+                    FileRecord.project_id == project_id, FileRecord.file_path == entries[0].name).first():
+                _lift_single_root(root)
+        else:
+            root = workspace_dir_for_project(project_id)
+            if not root.is_dir():
+                return False
+        result = analyze_workspace(root)
+        facts = source_facts.collect(root, result, zip_path)
+    project = db.query(Project).filter(Project.id == project_id).one()
+    _record_facts(project, facts)
+    db.commit()
+    return True
+
+
 def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_github: bool = False) -> dict:
     """Replace the project's workspace with the archive, rebuild the files table, analyse, and commit.
 
@@ -229,6 +270,7 @@ def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_gi
             _lift_single_root(workspace_root)
 
         result = analyze_workspace(workspace_root)
+        facts = source_facts.collect(workspace_root, result, zip_path)
         new_rows, total_files = build_file_records_from_workspace(
             project_id, workspace_root
         )
@@ -245,6 +287,7 @@ def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_gi
         db.add_all(new_rows)
         project = db.query(Project).filter(Project.id == project_id).one()
         analysis = apply_analysis_to_project(db, project, workspace_root, result)
+        _record_facts(project, facts)
         db.commit()
 
         return {

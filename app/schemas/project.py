@@ -1,3 +1,4 @@
+import re
 from uuid import UUID
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 from typing import Annotated, Dict, List, Optional
@@ -19,6 +20,25 @@ class ProjectCreate(BaseModel):
     cover_image_url: Optional[str] = None
     demo_video_url: Optional[str] = None
     comments_enabled: Optional[bool] = None  # omitted on update = unchanged
+    live_url: Optional[str] = None  # omitted on update = unchanged; "" clears
+    impact_note: Optional[str] = Field(default=None, max_length=1000)  # omitted on update = unchanged; "" clears
+
+    @field_validator("live_url", mode="before")
+    @classmethod
+    def check_live_url(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if not s:
+            return ""
+        if len(s) > 500 or not re.match(r"^https?://[^\s/$.?#][^\s]*$", s, re.I):
+            raise ValueError("Enter a full link starting with http:// or https://")
+        return s
+
+    @field_validator("impact_note", mode="before")
+    @classmethod
+    def trim_impact_note(cls, v):
+        return v.strip() if isinstance(v, str) else v
 
     @field_validator("category_other", mode="before")
     @classmethod
@@ -93,6 +113,9 @@ class ProjectResponse(BaseModel):
     cover_image_url: Optional[str] = None
     demo_video_url: Optional[str] = None
     github_url: Optional[str] = None
+    live_url: Optional[str] = None
+    impact_note: Optional[str] = None
+    source_analyzed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

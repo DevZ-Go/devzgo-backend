@@ -54,6 +54,13 @@ class Project(Base):
     comments_enabled = Column(Boolean, nullable=False, server_default=true())
     owner_focus = Column(String(200), nullable=True)  # what the owner says they are working on
 
+    live_url = Column(String(500), nullable=True)  # demo or deployment link
+    impact_note = Column(Text, nullable=True)  # outcomes the developer reports; shown as their own claim
+    # Facts recorded at the last upload, import or re-analysis (app.services.source_facts); None before that.
+    source_facts = Column(JSONB, nullable=True)
+    source_analyzed_at = Column(DateTime(timezone=True), nullable=True)
+    source_facts_version = Column(Integer, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
