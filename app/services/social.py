@@ -107,7 +107,20 @@ def _setting(user: User, field: str, default):
 def may_message(db: Session, sender_id: UUID, recipient: User) -> bool:
     if _setting(recipient, "message_policy", "anyone") != "connections":
         return True
-    return is_connected(db, sender_id, recipient.id)
+    return is_connected(db, sender_id, recipient.id) or accepted_recruitment(db, sender_id, recipient.id)
+
+
+def accepted_recruitment(db: Session, a: UUID, b: UUID) -> bool:
+    """A candidate who accepted a recruiter's request can message with that recruiter either way."""
+    from app.models.recruiting import RecruitmentRequest
+
+    return db.query(RecruitmentRequest.id).filter(
+        RecruitmentRequest.status == "accepted",
+        or_(
+            and_(RecruitmentRequest.recruiter_id == a, RecruitmentRequest.candidate_id == b),
+            and_(RecruitmentRequest.recruiter_id == b, RecruitmentRequest.candidate_id == a),
+        ),
+    ).first() is not None
 
 
 def may_comment(db: Session, commenter_id: UUID, author_id: UUID) -> bool:
@@ -171,6 +184,9 @@ NOTIFY_FIELDS = {
     "collaboration_joined": "notify_collaborations",
     "collaboration_left": "notify_collaborations",
     "collaboration_removed": "notify_collaborations",
+    "recruitment_request": "notify_messages",
+    "recruitment_accepted": "notify_messages",
+    "recruitment_declined": "notify_messages",
 }
 
 
