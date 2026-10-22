@@ -1,10 +1,10 @@
 """
 GitHub insights for an imported project.
 
-GET  /projects/{id}/github           contributors, weekly commits, recent commits and pushes
-GET  /projects/{id}/github/commits   the full stored commit history, optionally for one contributor
-GET  /projects/{id}/github/pushes    the stored push history, optionally for one contributor
+GET  /projects/{id}/github           totals, weekly commits and each contributor's share
 POST /projects/{id}/github/refresh   the owner re-reads the repository with a live import handle
+
+The full commit and push history is served by the activity log (app/routes/activity_log.py).
 """
 
 from collections import Counter, defaultdict
@@ -12,15 +12,14 @@ from typing import Optional
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.dependencies import get_current_user_optional, require_developer
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
-from app.models.github_history import ProjectCommit, ProjectContributor, ProjectPush
+from app.models.github_history import ProjectContributor, ProjectPush
 from app.models.project import Project
 from app.models.user import User
 from app.services import github_history as history
@@ -48,41 +47,18 @@ def _people(db: Session, ids: set[UUID]) -> dict:
     return {u.id: user_summary(u).model_dump(mode="json") for u in users}
 
 
-def _commit_view(c: ProjectCommit, person) -> dict:
-    return {"sha": c.sha, "message": c.message, "committed_at": c.committed_at,
-            "login": c.author_login, "name": c.author_name or c.author_login, "user": person}
-
-
-def _push_view(p: ProjectPush, person) -> dict:
-    return {"id": p.event_id, "branch": p.branch, "commit_count": p.commit_count, "pushed_at": p.pushed_at,
-            "login": p.actor_login, "user": person}
-
-
-def _contributor(db: Session, project_id: UUID, contributor_id: Optional[UUID]) -> Optional[ProjectContributor]:
-    if contributor_id is None:
-        return None
-    row = db.query(ProjectContributor).filter_by(id=contributor_id, project_id=project_id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Contributor not found")
-    return row
-
-
 @router.get("")
 def insights(project_id: UUID, db: Session = Depends(get_db), viewer: Optional[User] = Depends(get_current_user_optional)):
     project = _project(db, project_id, viewer)
     contributors = (db.query(ProjectContributor).filter_by(project_id=project_id)
                     .order_by(ProjectContributor.commits.desc()).all())
     pushes = db.query(ProjectPush).filter_by(project_id=project_id).order_by(ProjectPush.pushed_at.desc().nullslast()).all()
-    recent = (db.query(ProjectCommit).filter_by(project_id=project_id)
-              .order_by(ProjectCommit.committed_at.desc().nullslast()).limit(20).all())
-    match = history.matcher_for(db, [project], contributors, pushes, recent)
+    match = history.matcher_for(db, [project], contributors)
 
     def who(github_id, email=None):
         return match.user(project.id, github_id, email)
 
-    people = _people(db, {uid for uid in [who(c.github_id, c.email) for c in contributors]
-                          + [who(p.actor_github_id) for p in pushes]
-                          + [who(c.author_github_id, c.author_email) for c in recent] if uid})
+    people = _people(db, {uid for uid in (who(c.github_id, c.email) for c in contributors) if uid})
     pushes_by = Counter(p.actor_github_id or p.actor_login for p in pushes)
     total = sum(c.commits or 0 for c in contributors)
     weekly: dict[int, int] = defaultdict(int)
@@ -111,47 +87,7 @@ def insights(project_id: UUID, db: Session = Depends(get_db), viewer: Optional[U
             "weekly": c.weekly or [],
             "user": people.get(who(c.github_id, c.email)),
         } for c in contributors],
-        "commits": [_commit_view(c, people.get(who(c.author_github_id, c.author_email))) for c in recent],
-        "pushes": [_push_view(p, people.get(who(p.actor_github_id))) for p in pushes[:20]],
     }
-
-
-@router.get("/commits")
-def commit_history(project_id: UUID, contributor: Optional[UUID] = None, offset: int = Query(0, ge=0),
-                   limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db),
-                   viewer: Optional[User] = Depends(get_current_user_optional)):
-    project = _project(db, project_id, viewer)
-    query = db.query(ProjectCommit).filter_by(project_id=project_id)
-    if row := _contributor(db, project_id, contributor):
-        if row.github_id:
-            query = query.filter(ProjectCommit.author_github_id == row.github_id)
-        elif row.email:
-            query = query.filter(ProjectCommit.author_github_id.is_(None), ProjectCommit.author_email == row.email)
-        else:
-            query = query.filter(ProjectCommit.author_github_id.is_(None), ProjectCommit.author_name == row.name)
-    total = query.count()
-    rows = query.order_by(ProjectCommit.committed_at.desc().nullslast(), ProjectCommit.sha).offset(offset).limit(limit).all()
-    match = history.matcher_for(db, [project], [], commits=rows)
-    people = _people(db, {uid for c in rows if (uid := match.user(project.id, c.author_github_id, c.author_email))})
-    return {"total": total, "items": [
-        _commit_view(c, people.get(match.user(project.id, c.author_github_id, c.author_email))) for c in rows
-    ]}
-
-
-@router.get("/pushes")
-def push_history(project_id: UUID, contributor: Optional[UUID] = None, offset: int = Query(0, ge=0),
-                 limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db),
-                 viewer: Optional[User] = Depends(get_current_user_optional)):
-    project = _project(db, project_id, viewer)
-    query = db.query(ProjectPush).filter_by(project_id=project_id)
-    if row := _contributor(db, project_id, contributor):
-        query = query.filter(or_(ProjectPush.actor_github_id == row.github_id, ProjectPush.actor_login == row.login)
-                             if row.github_id else ProjectPush.id.is_(None))
-    total = query.count()
-    rows = query.order_by(ProjectPush.pushed_at.desc().nullslast(), ProjectPush.event_id).offset(offset).limit(limit).all()
-    match = history.matcher_for(db, [project], [], pushes=rows)
-    people = _people(db, {uid for p in rows if (uid := match.user(project.id, p.actor_github_id))})
-    return {"total": total, "items": [_push_view(p, people.get(match.user(project.id, p.actor_github_id))) for p in rows]}
 
 
 @router.post("/refresh", dependencies=[rate_limit("github_refresh", 6, 60)])

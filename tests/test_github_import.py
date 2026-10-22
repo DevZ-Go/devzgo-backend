@@ -182,11 +182,14 @@ def test_history_credits_each_person_and_refresh_adds_pushes(client, make_user, 
     assert people["mate"]["user"]["id"] == mate_id and people["mate"]["pushes"] == 1
     assert people["Docs Person"]["user"]["id"] == writer_id and people["Docs Person"]["commits"] == 2
     assert "email" not in people["Docs Person"] and mail not in str(insights)
-    assert insights["commits"][0]["message"] == "Polish docs" and insights["weekly"] == [[week, 14]]
+    assert insights["weekly"] == [[week, 14]] and "commits" not in insights and "pushes" not in insights
 
-    docs = client.get(f"/projects/{pid}/github/commits", params={"contributor": people["Docs Person"]["id"]}).json()
+    log = client.get(f"/projects/{pid}/github/activity-log", headers=stranger, params={"kind": "commits"}).json()
+    assert log["items"][0]["message"] == "Polish docs"
+    docs = client.get(f"/profiles/{writer_id}/activity-log", headers=stranger, params={"kind": "commits", "project": pid}).json()
     assert docs["total"] == 2 and {c["user"]["id"] for c in docs["items"]} == {writer_id}
-    assert client.get(f"/projects/{pid}/github/pushes", params={"contributor": people["mate"]["id"]}).json()["total"] == 1
+    mate_pushes = client.get(f"/profiles/{mate_id}/activity-log", headers=stranger, params={"kind": "pushes", "project": pid}).json()
+    assert mate_pushes["total"] == 1
 
     def card(headers, user_id):
         name = client.get("/auth/me", headers=headers).json()["username"]
