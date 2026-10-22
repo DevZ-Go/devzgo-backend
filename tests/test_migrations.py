@@ -77,6 +77,29 @@ def test_legacy_create_all_database_upgrades_cleanly(migr_engine):
         assert conn.execute(text("SELECT count(*) FROM users")).scalar() == 1  # data survives
 
 
+def test_github_url_backfills_source_metadata(migr_engine):
+    _run(migr_engine, "upgrade", "020_technical_challenges")
+    with migr_engine.begin() as conn:
+        user_id = conn.execute(text(
+            "INSERT INTO users (id, username, email) VALUES (gen_random_uuid(), 'src_owner', 'src_owner@example.com') RETURNING id"
+        )).scalar()
+        conn.execute(text(
+            "INSERT INTO projects (id, owner_id, title, category, visibility, github_url) "
+            "VALUES (gen_random_uuid(), :owner, 'Shop', 'GAMING', 'PRIVATE', 'https://github.com/octo/shop.git')"
+        ), {"owner": user_id})
+        conn.execute(text(
+            "INSERT INTO projects (id, owner_id, title, category, visibility) "
+            "VALUES (gen_random_uuid(), :owner, 'Zip', 'GAMING', 'PUBLIC')"
+        ), {"owner": user_id})
+    _run(migr_engine, "upgrade", "head")
+    with migr_engine.connect() as conn:
+        rows = {title: (kind, name) for title, kind, name in conn.execute(text(
+            "SELECT title, source_kind, github_full_name FROM projects"
+        ))}
+    assert rows["Shop"] == ("github", "octo/shop")
+    assert rows["Zip"] == ("zip", None)
+
+
 def test_existing_recruiters_become_recruiter_accounts(migr_engine):
     _run(migr_engine, "upgrade", "016_chat_room_photo")
     with migr_engine.begin() as conn:

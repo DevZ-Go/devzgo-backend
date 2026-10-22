@@ -98,6 +98,23 @@ class ProjectFileEntry(BaseModel):
         from_attributes = True
 
 
+class SourceSnapshot(BaseModel):
+    origin: str
+    ref: Optional[str] = None
+    commit_sha: Optional[str] = None
+    synced_at: Optional[datetime] = None
+
+
+class ProjectSource(BaseModel):
+    kind: str = "zip"
+    repository: Optional[str] = None
+    default_branch: Optional[str] = None
+    snapshot: Optional[SourceSnapshot] = None
+    sync_state: Optional[str] = None
+    sync_error: Optional[str] = None
+    sync_updated_at: Optional[datetime] = None
+
+
 class ProjectResponse(BaseModel):
     id: UUID
     owner_id: UUID
@@ -116,6 +133,7 @@ class ProjectResponse(BaseModel):
     live_url: Optional[str] = None
     impact_note: Optional[str] = None
     source_analyzed_at: Optional[datetime] = None
+    source: Optional[ProjectSource] = None
     created_at: datetime
     updated_at: datetime
 

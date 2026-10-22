@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
@@ -18,5 +18,7 @@ class File(Base):
     is_directory = Column(Boolean, default=False, nullable=False)
     # The parent_path column stores the path of the parent directory for each file. This is useful for reconstructing the file hierarchy and navigating through directories. For files in the root directory, this can be null or an empty string.
     parent_path = Column(String, nullable=True)
+    size_bytes = Column(BigInteger, nullable=True)
+    kind = Column(String(16), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

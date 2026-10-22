@@ -12,7 +12,7 @@ import os
 import shutil
 from functools import lru_cache
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 
 ROOT = Path("storage")
 # A workspace can hold thousands of small files; one at a time that is minutes of round trips to the bucket.
@@ -86,6 +86,49 @@ def read(key: str) -> bytes:
         return _client().get_object(Bucket=_bucket(), Key=key)["Body"].read()
     except _client().exceptions.NoSuchKey as exc:
         raise FileNotFoundError(key) from exc
+
+
+def _missing(exc: Exception) -> bool:
+    code = str(getattr(exc, "response", {}).get("Error", {}).get("Code", ""))
+    return code in ("404", "NoSuchKey", "NotFound")
+
+
+def size(key: str) -> int:
+    """Object size in bytes without reading it; FileNotFoundError if missing."""
+    if not is_s3():
+        path = ROOT / key
+        if not path.is_file():
+            raise FileNotFoundError(key)
+        return path.stat().st_size
+    from botocore.exceptions import ClientError
+
+    try:
+        return int(_client().head_object(Bucket=_bucket(), Key=key)["ContentLength"])
+    except ClientError as exc:
+        if _missing(exc):
+            raise FileNotFoundError(key) from exc
+        raise
+
+
+def iter_range(key: str, start: int, end: int, chunk: int = 64 * 1024) -> Iterator[bytes]:
+    """Bytes start..end (inclusive) in chunks, without holding the object in memory (S3 mode)."""
+    from botocore.exceptions import ClientError
+
+    try:
+        body = _client().get_object(Bucket=_bucket(), Key=key, Range=f"bytes={start}-{end}")["Body"]
+    except ClientError as exc:
+        if _missing(exc):
+            raise FileNotFoundError(key) from exc
+        raise
+    try:
+        yield from body.iter_chunks(chunk)
+    finally:
+        body.close()
+
+
+def read_range(key: str, start: int, end: int) -> bytes:
+    """Bytes start..end (inclusive) of an object (S3 mode)."""
+    return b"".join(iter_range(key, start, end))
 
 
 def url(key: str, expires: int = 3600, filename: str | None = None) -> str:

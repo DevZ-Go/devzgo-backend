@@ -1,9 +1,6 @@
-import mimetypes
 from pathlib import Path
-from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse, Response
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -36,7 +33,9 @@ from app.services.social import (
     public_project_filter,
 )
 from app.routes.workspace_upload import perform_workspace_zip_upload
-from app.services import storage
+from app.services import source_state
+from app.services.file_delivery import serve_stored_file
+from app.services.file_types import TEXT_PREVIEW_BYTES
 from app.services.project_storage import delete_all_project_storage
 from app.services.workspace_extract import is_os_junk
 from app.services.workspace_files import (
@@ -44,9 +43,9 @@ from app.services.workspace_files import (
     is_secret_path,
     language_for_path,
     normalize_relative_path,
-    read_workspace_file,
-    resolve_workspace_file,
+    read_workspace_head,
     sniff_is_binary,
+    workspace_file_size,
 )
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
@@ -350,18 +349,30 @@ def _resolve_indexed_relative_path(
     return relative
 
 
+def _decode_text(raw: bytes, truncated: bool) -> str | None:
+    """UTF-8 text, or None when the bytes are not text. A cut preview drops only a trailing partial character."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        if truncated and exc.start > 0 and exc.end == len(raw):
+            try:
+                return raw[:exc.start].decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        return None
+
+
 # ---------------- RAW WORKSPACE FILE (permissioned; images/media) ----------------
 @router.get("/{project_id}/file/raw")
 def read_project_file_raw(
     project_id: UUID,
     path: str = Query(..., min_length=1, description="Relative path inside project workspace"),
+    download: bool = Query(False),
+    range_header: str | None = Header(None, alias="Range"),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    """
-    Stream a workspace file with the same visibility rules as JSON preview.
-    Used for image previews instead of public /storage/project_* URLs.
-    """
+    """Stream a workspace file. Active types are plain text; downloads are attachments. No bucket URLs."""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -375,30 +386,7 @@ def read_project_file_raw(
             detail="This file may contain secrets and is hidden from public preview.",
         )
 
-    if storage.is_s3():
-        # Streamed, not redirected: the frontend fetches this with an auth header, and a
-        # cross-origin redirect to the bucket would need bucket CORS and drop that header.
-        try:
-            data = read_workspace_file(project_id, relative)
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail="File not found") from exc
-        return Response(
-            data,
-            media_type=mimetypes.guess_type(relative)[0] or "application/octet-stream",
-            headers={"Content-Disposition": "inline; filename*=UTF-8''" + quote(Path(relative).name)},
-        )
-    try:
-        resolved_file = resolve_workspace_file(project_id, relative)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="File not found") from exc
-
-    return FileResponse(
-        path=resolved_file,
-        filename=Path(relative).name,
-        content_disposition_type="inline",
-    )
+    return serve_stored_file(project_id, relative, range_header, download)
 
 
 # ---------------- READ ONE PROJECT FILE (JSON preview) ----------------
@@ -422,20 +410,9 @@ def read_project_file(
 
     access = _require_project_file_access(db, project, current_user)
     relative = _resolve_indexed_relative_path(project_id, path, db)
-
-    try:
-        raw = read_workspace_file(project_id, relative)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="File not found") from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail="Failed to read file") from exc
-
+    secret = is_secret_path(relative)
     name = Path(relative).name
     extension = Path(relative).suffix.lower()
-    size = len(raw)
-    secret = is_secret_path(relative)
     image = is_image_path(relative)
 
     base = ProjectFileContentResponse(
@@ -443,21 +420,31 @@ def read_project_file(
         name=name,
         extension=extension,
         language=language_for_path(relative),
-        size=size,
+        size=0,
         is_binary=False,
         is_secret=secret,
         is_image=image,
         content=None,
         message=None,
     )
-
     if secret and not access["secrets"]:
         base.message = "This file may contain secrets and is hidden from public preview."
         return base
 
+    try:
+        size = workspace_file_size(project_id, relative)
+        raw = read_workspace_head(project_id, relative, size, TEXT_PREVIEW_BYTES)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Failed to read file") from exc
+
+    base.size = size
+    truncated = size > TEXT_PREVIEW_BYTES
     binary = sniff_is_binary(raw[:8192], relative)
     base.is_binary = binary
-
     if binary:
         if image:
             base.message = "Image file — use the raw file endpoint for preview."
@@ -465,18 +452,13 @@ def read_project_file(
             base.message = "Binary file — content preview is not available."
         return base
 
-    try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError:
+    content = _decode_text(raw, truncated)
+    if content is None:
         base.is_binary = True
         base.message = "File is not valid UTF-8 text — content preview is not available."
         return base
-
-    max_preview = 2 * 1024 * 1024
-    if len(content) > max_preview:
-        content = content[:max_preview]
+    if truncated:
         base.message = "File truncated for preview (first 2 MiB)."
-
     base.content = content
     return base
 
@@ -723,6 +705,7 @@ def build_project_response(
         live_url=project.live_url,
         impact_note=project.impact_note,
         source_analyzed_at=project.source_analyzed_at,
+        source=source_state.summary(project, access),
         created_at=project.created_at,
         updated_at=project.updated_at,
         owner_username=owner_username,

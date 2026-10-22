@@ -31,6 +31,7 @@ from app.models.user import User
 from app.routes.workspace_upload import install_workspace_zip
 from app.services import github_history as history
 from app.services import github_import as gh
+from app.services import source_state
 from app.services.skills import sync_skills_from_projects
 
 router = APIRouter(tags=["GitHub import"])
@@ -162,6 +163,11 @@ def import_repo(repo_id: int, data: HandleRequest, db: Session = Depends(get_db)
         category_other=(repo.get("language") or None) if category.value == "Other" else None,
         visibility=ProjectVisibility.PRIVATE if private else ProjectVisibility.PUBLIC,
         github_url=html_url,
+        source_kind="github",
+        github_repo_id=repo.get("id"),
+        github_full_name=(repo.get("full_name") or "")[:200] or None,
+        github_default_branch=repo.get("default_branch") or None,
+        github_tracked_branch=repo.get("default_branch") or None,
         cover_image_url=None if private else f"https://opengraph.githubassets.com/1/{repo['full_name']}",
         github_commit_count=activity["commits"],
         github_push_count=activity["pushes"],
@@ -177,18 +183,22 @@ def import_repo(repo_id: int, data: HandleRequest, db: Session = Depends(get_db)
     code, detail, analysis = "analysed", None, None
     with tempfile.TemporaryDirectory(prefix="gh_import_") as tmp:
         archive = Path(tmp) / "repo.zip"
+        branch = repo.get("default_branch") or "HEAD"
+        sha = gh.head_commit_sha(token, repo["full_name"], branch)
         try:
-            if gh.download_archive(token, repo["full_name"], repo.get("default_branch") or "HEAD", archive):
+            if gh.download_archive(token, repo["full_name"], sha or branch, archive):
                 project = db.query(Project).filter(Project.id == project_id).first()
-                analysis = install_workspace_zip(db, project, archive, from_github=True)
+                analysis = install_workspace_zip(db, project, archive, from_github=True, ref=repo.get("default_branch"), commit_sha=sha)
             else:
                 code, detail = "empty", "The repository has no commits yet."
         except gh.ArchiveTooLarge:
             code, detail = "skipped", "The code is larger than the 50 MB upload limit, so only the details were imported."
+            source_state.mark(db, project_id, source_state.FAILED, detail)
         except HTTPException as exc:
             code, detail = "skipped", str(exc.detail)
         except httpx.HTTPError:
             code, detail = "failed", "GitHub stopped sending the code. Upload a ZIP from the project page instead."
+            source_state.mark(db, project_id, source_state.FAILED, detail)
 
     sync_skills_from_projects(db, me)
     db.commit()

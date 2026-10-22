@@ -30,6 +30,14 @@ def test_save_read_delete(backend: str):
         storage.read(f"{backend}/a.txt")
 
 
+def test_size_and_ranges(backend: str):
+    storage.save(f"{backend}/blob.bin", io.BytesIO(b"abcdefghij"))
+    assert storage.size(f"{backend}/blob.bin") == 10
+    if storage.is_s3():
+        assert storage.read_range(f"{backend}/blob.bin", 2, 5) == b"cdef"
+    storage.delete_prefix(f"{backend}/")
+
+
 def test_delete_by_name_prefix(backend: str):
     storage.save(f"{backend}/p1_x.png", io.BytesIO(b"1"))
     storage.save(f"{backend}/p2_y.png", io.BytesIO(b"2"))
