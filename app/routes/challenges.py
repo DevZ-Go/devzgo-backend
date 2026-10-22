@@ -27,6 +27,7 @@ from app.models.challenge import (
     TechnicalChallenge,
 )
 from app.models.collaboration import ProjectCollaborator
+from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.challenge import (
@@ -197,6 +198,17 @@ def publish_challenge(challenge_id: UUID, db: Session = Depends(get_db), me: Use
     _check_deadline(ch.deadline_at)
     ch.status, ch.closed_at = "open", None
     ch.published_at = ch.published_at or _now()
+    if ch.visibility == "public":
+        company = _company(me) or "A recruiter"
+        opted_in = (
+            db.query(User.id)
+            .join(UserProfile, UserProfile.user_id == User.id)
+            .filter(User.account_type != "recruiter", UserProfile.notify_challenges.is_(True), User.id != me.id)
+            .all()
+        )
+        for (developer_id,) in opted_in:
+            notify(db, developer_id, me, "challenge_posted", str(ch.id),
+                   f"{company} posted a technical challenge: {ch.title}.")
     db.commit()
     db.refresh(ch)
     return _recruiter_view(db, ch)

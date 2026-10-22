@@ -18,7 +18,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.models.workspace import WorkspaceAuditEvent
 from app.services import crypto, github_app as gh
-from app.services.github_connection import disconnect, save_tokens, status_of
+from app.services.github_connection import GitHubAccountTaken, disconnect, save_tokens, status_of
 from app.models.workspace import GitHubConnection
 
 router = APIRouter(prefix="/github/connection", tags=["GitHub connection"])
@@ -75,6 +75,10 @@ def callback(request: Request, code: str = "", state: str = "", error: str = "",
         profile = gh.user(body["access_token"])
         save_tokens(db, user, body, profile)
         _audit(db, user, "connect", "ok")
+    except GitHubAccountTaken:
+        taken = RedirectResponse(_front("error=taken"))
+        taken.delete_cookie(COOKIE)
+        return taken
     except (gh.GitHubError, crypto.EncryptionNotConfigured):
         return failed
     done = RedirectResponse(_front("connected=1"))

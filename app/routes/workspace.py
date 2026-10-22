@@ -86,6 +86,12 @@ def _project(db: Session, project_id: UUID, user: User) -> tuple[Project, dict]:
     return project, access
 
 
+def _require_editor(access: dict, user: User) -> None:
+    """The code workspace is for the owner and teammates who can change files."""
+    if user.account_type == "recruiter" or not access["files"]:
+        raise HTTPException(status_code=403, detail="You can't edit files in this project.")
+
+
 def _writer(db: Session, project: Project, user: User) -> str:
     if user.account_type == "recruiter":
         raise HTTPException(status_code=403, detail="Recruiters can't edit project files.")
@@ -149,6 +155,7 @@ def _finish(db: Session, project: Project, user: User, background: BackgroundTas
 @router.get("")
 def workspace_status(project_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     project, access = _project(db, project_id, me)
+    _require_editor(access, me)
     connection = db.query(GitHubConnection).filter_by(user_id=me.id).one_or_none()
     latest = db.query(WorkspaceSyncJob).filter_by(project_id=project.id).order_by(WorkspaceSyncJob.created_at.desc()).first()
     can_edit = bool(access["files"] and me.account_type != "recruiter" and (project.source_kind or "zip") == "github")
@@ -198,7 +205,8 @@ def delete_draft(project_id: UUID, branch: str, path: str, db: Session = Depends
 
 @router.get("/branches")
 def list_branches(project_id: UUID, db: Session = Depends(get_db), me: User = Depends(require_developer)):
-    project, _access = _project(db, project_id, me)
+    project, access = _project(db, project_id, me)
+    _require_editor(access, me)
     if (project.source_kind or "zip") != "github":
         raise HTTPException(status_code=409, detail="This project has no GitHub repository.")
     token = access_token(db, me)
@@ -215,7 +223,8 @@ def list_branches(project_id: UUID, db: Session = Depends(get_db), me: User = De
 
 @router.get("/tree")
 def live_tree(project_id: UUID, ref: str, db: Session = Depends(get_db), me: User = Depends(require_developer)):
-    project, _access = _project(db, project_id, me)
+    project, access = _project(db, project_id, me)
+    _require_editor(access, me)
     token = access_token(db, me)
     try:
         can_read(project, token)
@@ -227,6 +236,7 @@ def live_tree(project_id: UUID, ref: str, db: Session = Depends(get_db), me: Use
 @router.get("/file")
 def live_file(project_id: UUID, ref: str, path: str, db: Session = Depends(get_db), me: User = Depends(require_developer)):
     project, access = _project(db, project_id, me)
+    _require_editor(access, me)
     relative = normalize_safe(path)
     if is_secret_path(relative) and not access["secrets"]:
         raise HTTPException(status_code=403, detail="This file may contain secrets and is hidden from public preview.")
@@ -313,7 +323,8 @@ def commit_many(project_id: UUID, data: MultiCommitIn, background: BackgroundTas
 
 @router.get("/compare")
 def compare_branches(project_id: UUID, base: str, head: str, db: Session = Depends(get_db), me: User = Depends(require_developer)):
-    project, _access = _project(db, project_id, me)
+    project, access = _project(db, project_id, me)
+    _require_editor(access, me)
     token = access_token(db, me)
     try:
         can_read(project, token)

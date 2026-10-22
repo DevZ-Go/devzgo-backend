@@ -184,6 +184,7 @@ NOTIFY_FIELDS = {
     "collaboration_joined": "notify_collaborations",
     "collaboration_left": "notify_collaborations",
     "collaboration_removed": "notify_collaborations",
+    "challenge_posted": "notify_challenges",
     "recruitment_request": "notify_messages",
     "recruitment_accepted": "notify_messages",
     "recruitment_declined": "notify_messages",

@@ -75,6 +75,8 @@ class UserProfileUpdate(UserProfileBase):
     notify_connections: Optional[bool] = None
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
+    notify_challenges: Optional[bool] = None
+    start_page: Optional[Literal["home", "resume"]] = None
     open_to_work: Optional[bool] = None
     work_types: Optional[List[WorkType]] = Field(default=None, max_length=len(WORK_TYPES))
     work_arrangements: Optional[List[WorkArrangement]] = Field(default=None, max_length=len(WORK_ARRANGEMENTS))
@@ -115,6 +117,8 @@ class UserProfileResponse(UserProfileBase):
     notify_connections: Optional[bool] = None
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
+    notify_challenges: Optional[bool] = None
+    start_page: Optional[str] = None
     account_type: str = "developer"
     tour_version: Optional[int] = None  # owner only
     tour_state: Optional[str] = None  # owner only
@@ -236,7 +240,7 @@ class ActivityLikeResponse(BaseModel):
 class FeedPostCreate(BaseModel):
     title: ShortText = None
     content: str = Field(min_length=1, max_length=5000)
-    activity_type: Literal["post", "milestone", "collab_call", "project_update"] = "post"
+    activity_type: Literal["post", "milestone", "collab_call", "project_update", "project_share"] = "post"
     project_id: Optional[UUID] = None
     media_url: Link = None
 

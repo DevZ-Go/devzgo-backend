@@ -141,6 +141,19 @@ def test_deadlines_close_submissions_in_utc(client, make_user, make_recruiter):
     assert late.status_code == 400 and "no longer accepting" in late.json()["detail"]
 
 
+def test_public_challenges_notify_only_developers_who_opted_in(client, make_user, make_recruiter):
+    recruiter, _ = make_recruiter()
+    opted, _ = make_user()
+    quiet, _ = make_user()
+    assert client.put("/profiles/me", headers=opted, json={"notify_challenges": True}).status_code == 200
+    cid = _open(client, recruiter, visibility="public")
+    heard = client.get("/notifications", headers=opted).json()
+    assert any(n["type"] == "challenge_posted" and n["related_id"] == cid for n in heard)
+    assert client.get("/notifications", headers=quiet).json() == []
+    invite_only = _open(client, recruiter)
+    assert not any(n["related_id"] == invite_only for n in client.get("/notifications", headers=opted).json())
+
+
 def test_public_challenges_need_no_invitation(client, make_user, make_recruiter):
     recruiter, _ = make_recruiter()
     dev, _ = make_user()
