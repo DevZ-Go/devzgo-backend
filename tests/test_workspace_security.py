@@ -96,3 +96,13 @@ def test_safe_extract_rejects_extracted_size(tmp_path: Path, monkeypatch: pytest
     with pytest.raises(HTTPException) as exc:
         safe_extract_zip(zip_path, dest)
     assert exc.value.status_code == 400
+
+
+def test_safe_extract_leaves_out_dependencies_and_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("app.services.workspace_extract.MAX_FILE_COUNT", 3)
+    entries = {f"app/node_modules/pkg{i}/index.js": b"x" for i in range(10)}
+    entries |= {"app/.git/HEAD": b"ref", "app/Pods/Lib/a.swift": b"x", "app/src/main.ts": b"x", "app/build.gradle": b"x"}
+    dest = tmp_path / "dest"
+    safe_extract_zip(_make_zip(tmp_path, entries), dest)
+    files = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    assert files == ["app/build.gradle", "app/src/main.ts"]

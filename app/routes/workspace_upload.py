@@ -23,6 +23,7 @@ from app.models.user import User
 from app.services import storage
 from app.services.social import project_access
 from app.services.project_analysis import (
+    AnalysisResult,
     analyze_workspace,
     resolve_tech_stacks_from_names,
 )
@@ -125,7 +126,7 @@ def build_file_records_from_workspace(
 
 
 def apply_analysis_to_project(
-    db: Session, project: Project, workspace_root: Path
+    db: Session, project: Project, workspace_root: Path, result: AnalysisResult | None = None
 ) -> dict:
     """
     Run ProjectAnalysisService-equivalent analysis and persist results.
@@ -134,7 +135,7 @@ def apply_analysis_to_project(
     - Only auto-fills confirmed tech_stacks when the project currently has none
       (first upload). Re-uploads do not wipe user-confirmed stacks.
     """
-    result = analyze_workspace(workspace_root)
+    result = result or analyze_workspace(workspace_root)
     linked, linked_names, linked_ids = resolve_tech_stacks_from_names(
         db, result.tech_names
     )
@@ -206,18 +207,19 @@ def _lift_single_root(workspace_root: Path) -> None:
 
 
 def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_github: bool = False) -> dict:
-    """Replace the project's workspace with the archive, rebuild the files table, analyse, and commit."""
+    """Replace the project's workspace with the archive, rebuild the files table, analyse, and commit.
+
+    Extracting, analysing and copying to the bucket happen before any database write, so the
+    transaction stays short and no connection sits idle while files upload.
+    """
     project_id = project.id
+    db.commit()
     in_bucket = storage.is_s3()
     workspace_root = (
         Path(tempfile.mkdtemp(prefix="workspace_")) / "w" if in_bucket else workspace_dir_for_project(project_id)
     )
 
     try:
-        db.query(FileRecord).filter(FileRecord.project_id == project_id).delete(
-            synchronize_session=False
-        )
-
         if workspace_root.exists():
             shutil.rmtree(workspace_root)
         workspace_root.mkdir(parents=True, exist_ok=True)
@@ -226,13 +228,10 @@ def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_gi
         if from_github:
             _lift_single_root(workspace_root)
 
+        result = analyze_workspace(workspace_root)
         new_rows, total_files = build_file_records_from_workspace(
             project_id, workspace_root
         )
-        for row in new_rows:
-            db.add(row)
-
-        analysis = apply_analysis_to_project(db, project, workspace_root)
 
         if in_bucket:
             storage.delete_prefix(f"project_{project_id}/")
@@ -240,6 +239,12 @@ def install_workspace_zip(db: Session, project: Project, zip_path: Path, from_gi
             with open(zip_path, "rb") as original:
                 storage.save(f"sources/{project_id}.zip", original)
 
+        db.query(FileRecord).filter(FileRecord.project_id == project_id).delete(
+            synchronize_session=False
+        )
+        db.add_all(new_rows)
+        project = db.query(Project).filter(Project.id == project_id).one()
+        analysis = apply_analysis_to_project(db, project, workspace_root, result)
         db.commit()
 
         return {
