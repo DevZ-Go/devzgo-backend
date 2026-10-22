@@ -17,6 +17,17 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB compressed upload
 MAX_EXTRACTED_BYTES = 200 * 1024 * 1024  # 200 MiB uncompressed
 MAX_FILE_COUNT = 5_000
 
+# Added by the OS when zipping, not by the author: Finder's __MACOSX folder and ._ metadata twins, plus folder caches.
+OS_JUNK_DIRS = frozenset({"__macosx"})
+OS_JUNK_NAMES = frozenset({".ds_store", "thumbs.db", "desktop.ini"})
+
+
+def is_os_junk(path: str) -> bool:
+    parts = [p.lower() for p in path.replace("\\", "/").split("/") if p]
+    if not parts:
+        return False
+    return any(p in OS_JUNK_DIRS for p in parts) or parts[-1].startswith("._") or parts[-1] in OS_JUNK_NAMES
+
 
 def is_zip_symlink(member: zipfile.ZipInfo) -> bool:
     """Detect Unix symlink entries in a ZIP (mode bits in external_attr)."""
@@ -44,7 +55,7 @@ def safe_extract_zip(zip_path: Path, dest_dir: Path, skip_symlinks: bool = False
     with zf:
         for member in zf.infolist():
             raw_name = member.filename
-            if not raw_name:
+            if not raw_name or is_os_junk(raw_name):
                 continue
 
             if is_zip_symlink(member):

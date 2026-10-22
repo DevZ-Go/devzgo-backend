@@ -38,6 +38,7 @@ from app.services.social import (
 from app.routes.workspace_upload import perform_workspace_zip_upload
 from app.services import storage
 from app.services.project_storage import delete_all_project_storage
+from app.services.workspace_extract import is_os_junk
 from app.services.workspace_files import (
     is_image_path,
     is_secret_path,
@@ -301,7 +302,7 @@ def list_project_files(
         .order_by(FileRecord.file_path.asc())
         .all()
     )
-    return rows
+    return [r for r in rows if not is_os_junk(r.file_path)]
 
 
 def _require_project_file_access(db: Session, project: Project, current_user: Optional[User]) -> dict:
