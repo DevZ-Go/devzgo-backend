@@ -112,8 +112,13 @@ class UserProfileResponse(UserProfileBase):
         from_attributes = True
 
 class GroupMember(BaseModel):
+    user_id: Optional[UUID] = None
     username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     role: str
+    access: Optional[str] = None
+    focus: Optional[str] = None
 
 class CollabGroup(BaseModel):
     project_id: UUID
@@ -226,6 +231,16 @@ class ProjectPreview(BaseModel):
     class Config:
         from_attributes = True
 
+class JoinedProject(ProjectPreview):
+    """A project someone joined, with their place on the team."""
+    owner_avatar_url: Optional[str] = None
+    visibility: Optional[str] = None
+    access: str
+    focus: Optional[str] = None
+    joined_at: Optional[datetime] = None
+    languages: List[LanguageShare] = []
+    team: List[GroupMember] = []
+
 class FeedActivityResponse(BaseModel):
     id: UUID
     user_id: UUID
@@ -319,11 +334,41 @@ class ChatRoomCreate(BaseModel):
 class ChatRoomSummary(BaseModel):
     id: UUID
     title: str
+    avatar_url: Optional[str] = None
     project_id: Optional[UUID] = None
     member_count: int
     unread_count: int = 0
     last_message: Optional[str] = None
     last_at: Optional[datetime] = None
+
+
+class ChatRoomUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
+class ChatRoomMembersAdd(BaseModel):
+    member_ids: List[UUID] = Field(min_length=1, max_length=20)
+
+
+class ChatRoomMember(BaseModel):
+    user_id: UUID
+    username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_admin: bool = False
+    team_role: Optional[str] = None
+    joined_at: Optional[datetime] = None
+
+
+class ChatRoomDetails(BaseModel):
+    id: UUID
+    title: str
+    avatar_url: Optional[str] = None
+    project_id: Optional[UUID] = None
+    project_title: Optional[str] = None
+    created_at: Optional[datetime] = None
+    is_admin: bool = False
+    members: List[ChatRoomMember]
 
 
 class RoomMessageCreate(BaseModel):

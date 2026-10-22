@@ -58,3 +58,12 @@ def test_github_only_account_can_set_password(client):
     set_pw = client.post("/auth/change-password", headers=headers, json={"new_password": "FirstPass1!"})
     assert set_pw.status_code == 200
     assert client.post("/auth/login", data={"username": "ghonly@example.com", "password": "FirstPass1!"}).status_code == 200
+
+
+def test_login_accepts_email_or_username_in_any_case(client):
+    client.post("/auth/register", json={"username": "either_way", "email": "either@example.com", "password": "Password1!"})
+    for login_id in ("either@example.com", "EITHER@example.com", "either_way", "Either_Way", "@either_way"):
+        response = client.post("/auth/login", data={"username": login_id, "password": "Password1!"})
+        assert response.status_code == 200, login_id
+    assert client.post("/auth/login", data={"username": "either_way", "password": "Wrong1!pass"}).status_code == 401
+    assert client.post("/auth/login", data={"username": "nobody_here", "password": "Password1!"}).status_code == 401

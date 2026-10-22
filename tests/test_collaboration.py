@@ -185,3 +185,21 @@ def test_each_person_writes_only_their_own_focus(client, make_user):
     assert next(m for m in team.values() if m["is_owner"])["focus"] == "API design"
     assert client.get(f"{_base(pid)}/me", headers=member).json()["focus"] == "Login screen"
     assert client.patch(f"{_base(pid)}/focus", headers=member, json={"focus": ""}).json() == {"focus": None}
+
+
+def test_profile_lists_joined_projects_with_access_focus_and_team(client, make_user):
+    owner, _ = make_user()
+    member, member_id = make_user()
+    pid = client.post("/projects", headers=owner, json={"title": "Joined", "category": "Gaming", "visibility": "Public"}).json()["id"]
+    name = client.get("/auth/me", headers=member).json()["username"]
+    inv = client.post(f"/collaborations/projects/{pid}/invitations", headers=owner,
+                      json={"username": name, "role": "Frontend", "access": "editor"}).json()
+    client.put(f"/collaborations/invitations/{inv['id']}/accept", headers=member)
+    client.patch(f"/collaborations/projects/{pid}/focus", headers=member, json={"focus": "Login screen"})
+
+    joined = client.get(f"/profiles/{member_id}/collaborations", headers=owner).json()
+    assert len(joined) == 1
+    row = joined[0]
+    assert row["contribution_info"] == "Frontend" and row["access"] == "editor" and row["focus"] == "Login screen"
+    assert {m["access"] for m in row["team"]} == {"owner", "editor"}
+    assert row["joined_at"]

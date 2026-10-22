@@ -15,6 +15,7 @@ class ChatRoom(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String(120), nullable=False)
+    avatar_url = Column(String, nullable=True)
     # Set when the room belongs to a project team. One room per project.
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, unique=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
