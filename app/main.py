@@ -44,6 +44,7 @@ from app.routes.github_import import router as github_import_router
 from app.routes.github_history import router as github_history_router
 from app.routes.wraps import router as wraps_router
 from app.routes.recruiting import router as recruiting_router
+from app.routes.activity_log import router as activity_log_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -111,6 +112,7 @@ app.include_router(analytics_router)
 app.include_router(realtime_router)
 app.include_router(wraps_router)
 app.include_router(recruiting_router)
+app.include_router(activity_log_router)
 
 
 @app.on_event("startup")
