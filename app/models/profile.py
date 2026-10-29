@@ -51,8 +51,12 @@ class UserProfile(Base):
     notify_connections = Column(Boolean, nullable=False, default=True, server_default="true")
     notify_messages = Column(Boolean, nullable=False, default=True, server_default="true")
     notify_collaborations = Column(Boolean, nullable=False, default=True, server_default="true")
-    # Off until the developer asks for challenge notices. Recruiters still invite people directly.
+    # Legacy mirror of challenge_notices: true when notices are anything other than off.
     notify_challenges = Column(Boolean, nullable=False, default=False, server_default="false")
+    # off | open_to_work | always. Public challenges stay quiet until the developer chooses.
+    challenge_notices = Column(String(20), nullable=False, default="off", server_default="off")
+    # off | open_to_work | always. Personal invitations stay on until the developer changes them.
+    challenge_invites = Column(String(20), nullable=False, default="always", server_default="always")
     # home: signed-in home. resume: the last page this account had open on this browser.
     start_page = Column(String(16), nullable=False, default="home", server_default="home")
 

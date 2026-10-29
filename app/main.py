@@ -33,6 +33,7 @@ from app.routes.project_comments import router as project_comments_router
 from app.routes.network import router as network_router
 from app.routes.connections import router as connections_router
 from app.routes.messages import router as messages_router
+from app.routes.safety import router as safety_router
 from app.routes.collaborations import router as collaborations_router
 from app.routes.notifications import router as notifications_router
 from app.routes.profiles import router as profiles_router
@@ -112,6 +113,7 @@ app.include_router(project_comments_router)
 app.include_router(network_router)
 app.include_router(connections_router)
 app.include_router(messages_router)
+app.include_router(safety_router)
 app.include_router(collaborations_router)
 app.include_router(notifications_router)
 app.include_router(profiles_router)

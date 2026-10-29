@@ -163,6 +163,19 @@ def test_password_reset_flow(client, make_user, monkeypatch):
     assert client.post("/auth/login", data={"username": email, "password": "Password1!"}).status_code == 401
 
 
+def test_password_reset_by_username(client, make_user, monkeypatch):
+    import app.routes.auth as auth_routes
+
+    sent = []
+    monkeypatch.setattr(auth_routes, "send_email", lambda to, subject, html, note="": sent.append(to))
+    headers, _ = make_user()
+    me = client.get("/auth/me", headers=headers).json()
+    assert client.post("/auth/forgot-password", json={"email": "@" + me["username"].upper()}).status_code == 200
+    assert sent == [me["email"]]
+    assert client.post("/auth/forgot-password", json={"email": "no-such-user-xyz"}).status_code == 200
+    assert len(sent) == 1
+
+
 def test_expired_reset_token_rejected(client, make_user):
     import hashlib
     from datetime import datetime, timedelta, timezone

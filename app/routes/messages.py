@@ -10,15 +10,28 @@ from uuid import UUID
 
 from app.db.session import get_db
 from app.models.user import User
-from app.models.message import Message
-from app.models.chat import ChatMember, ChatRoom, RoomMessage
+from app.models.message import Message, MessageReaction
+from app.models.chat import ChatMember, ChatRoom, RoomMessage, RoomMessageReaction
 from app.models.collaboration import ProjectCollaborator
 from app.models.project import Project
+from app.models.safety import ChatMute, UserBlock
 from app.services import storage
 from app.core.dependencies import get_current_user
+from app.services.chat_media import (
+    clean_name,
+    clip,
+    media_response,
+    normalize_emoji,
+    reaction_map,
+    store_upload,
+    take_media,
+    toggle_reaction,
+)
+from app.services.safety import blocked_any, blocked_between, is_muted, muted_rooms, quiet_senders, relation
 from app.services.social import display_name, may_message, notify, user_summary
 from app.services.chat_rooms import (
     connected,
+    fixed_room_admins,
     latest_preview,
     notify_room,
     post_room_message,
@@ -35,9 +48,11 @@ from app.schemas.network import (
     ChatRoomMembersAdd,
     ChatRoomSummary,
     ChatRoomUpdate,
+    AttachmentStored,
     ConversationResponse,
     MessageCreate,
     MessageResponse,
+    ReactionCreate,
     RoomMessageCreate,
     RoomMessageResponse,
 )
@@ -45,16 +60,53 @@ from app.schemas.network import (
 router = APIRouter(prefix="/messages", tags=["Messages"])
 
 
-def _message_response(m: Message, viewer_id: UUID) -> MessageResponse:
+def _sender_profile(user: Optional[User]) -> dict:
+    profile = user.profile if user else None
+    return {
+        "sender_username": user.username if user else None,
+        "sender_name": display_name(user) if user else None,
+        "sender_avatar_url": profile.avatar_url if profile else None,
+    }
+
+
+def _message_response(m: Message, viewer_id: UUID, reactions=None, hide_read: bool = False) -> MessageResponse:
+    """hide_read: the other person restricted the viewer, so the viewer never learns they read it."""
+    outgoing = m.sender_id == viewer_id
     return MessageResponse(
         id=m.id,
         sender_id=m.sender_id,
         receiver_id=m.receiver_id,
         content=m.content,
-        read=m.read,
+        read=False if (hide_read and outgoing) else m.read,
         created_at=m.created_at,
-        is_outgoing=(m.sender_id == viewer_id),
+        is_outgoing=outgoing,
+        media_kind=m.media_kind,
+        media_url=f"/messages/attachments/{m.id}" if m.media_key else None,
+        media_name=m.media_name,
+        reactions=reactions or [],
+        **_sender_profile(m.sender),
     )
+
+
+def _restricted_by(db: Session, viewer: UUID) -> set[UUID]:
+    """People who restricted the viewer."""
+    return {
+        row[0] for row in db.query(UserBlock.blocker_id)
+        .filter(UserBlock.blocked_id == viewer, UserBlock.kind == "restrict")
+    }
+
+
+def _announce_read(db: Session, reader: UUID, sender: UUID) -> None:
+    if relation(db, reader, sender) != "restrict":
+        queue_event(db, sender, {"type": "message.read", "by": str(reader)})
+
+
+def _direct_reactions(db: Session, rows: List[Message], viewer: UUID) -> dict:
+    return reaction_map(db, MessageReaction, "message_id", [row.id for row in rows], viewer)
+
+
+def _room_reactions(db: Session, rows: List[RoomMessage], viewer: UUID) -> dict:
+    return reaction_map(db, RoomMessageReaction, "message_id", [row.id for row in rows], viewer)
 
 
 @router.get("/conversations", response_model=List[ConversationResponse])
@@ -67,6 +119,7 @@ def get_conversations(
     # Latest message per partner in one query (Postgres DISTINCT ON).
     latest = (
         db.query(Message)
+        .options(selectinload(Message.sender).selectinload(User.profile))
         .filter(or_(Message.sender_id == me, Message.receiver_id == me))
         .distinct(partner)
         .order_by(partner, desc(Message.created_at))
@@ -79,12 +132,23 @@ def get_conversations(
         .filter(Message.receiver_id == me, Message.read.is_(False))
         .group_by(Message.sender_id).all()
     )
+    mine = dict(db.query(UserBlock.blocked_id, UserBlock.kind).filter(UserBlock.blocker_id == me))
+    blocked_me = {
+        row[0] for row in db.query(UserBlock.blocker_id).filter(UserBlock.blocked_id == me, UserBlock.kind == "block")
+    }
+    restricted_me = _restricted_by(db, me)
+    muted = {
+        row[0] for row in db.query(ChatMute.muted_user_id).filter(ChatMute.user_id == me, ChatMute.muted_user_id.isnot(None))
+    }
 
     conversations = [
         ConversationResponse(
             other_user=user_summary(users[pid]),
-            last_message=_message_response(m, me),
+            last_message=_message_response(m, me, hide_read=pid in restricted_me),
             unread_count=unread.get(pid, 0),
+            muted=pid in muted,
+            relation=mine.get(pid),
+            blocked_me=pid in blocked_me,
         )
         for m, pid in zip(latest, partner_ids) if pid in users
     ]
@@ -101,10 +165,14 @@ def get_message_thread(
     current_user: User = Depends(get_current_user),
 ):
     me = current_user.id
-    query = db.query(Message).filter(
-        or_(
-            and_(Message.sender_id == me, Message.receiver_id == other_user_id),
-            and_(Message.sender_id == other_user_id, Message.receiver_id == me),
+    query = (
+        db.query(Message)
+        .options(selectinload(Message.sender).selectinload(User.profile))
+        .filter(
+            or_(
+                and_(Message.sender_id == me, Message.receiver_id == other_user_id),
+                and_(Message.sender_id == other_user_id, Message.receiver_id == me),
+            )
         )
     )
     if before:
@@ -114,13 +182,15 @@ def get_message_thread(
     if not before and db.query(Message).filter(
         Message.sender_id == other_user_id, Message.receiver_id == me, Message.read.is_(False)
     ).update({"read": True}):
-        queue_event(db, other_user_id, {"type": "message.read", "by": str(me)})
+        _announce_read(db, me, other_user_id)
         db.commit()
         for m in messages:
             if m.receiver_id == me:
                 m.read = True
 
-    return [_message_response(m, me) for m in messages]
+    hide_read = relation(db, other_user_id, me) == "restrict"
+    reactions = _direct_reactions(db, messages, me)
+    return [_message_response(m, me, reactions.get(m.id), hide_read=hide_read) for m in messages]
 
 
 @router.post("", response_model=MessageResponse)
@@ -135,22 +205,34 @@ def send_message(
     recipient = db.query(User).options(selectinload(User.profile)).filter(User.id == msg_data.receiver_id).first()
     if not recipient:
         raise HTTPException(status_code=404, detail="Recipient developer not found")
+    if relation(db, current_user.id, recipient.id) == "block":
+        raise HTTPException(status_code=403, detail="You blocked this person. Unblock them to send a message.")
+    if blocked_between(db, current_user.id, recipient.id):
+        raise HTTPException(status_code=403, detail="You can't message this person")
     if not may_message(db, current_user.id, recipient):
         raise HTTPException(status_code=403, detail="This person only accepts messages from connections")
 
     content = msg_data.content.strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    media_key, media_kind = take_media(current_user.id, msg_data.media_key)
+    if not content and not media_key:
+        raise HTTPException(status_code=400, detail="Write a message or attach a photo, video or file")
+    media_name = clean_name(msg_data.media_name, media_key) if media_kind == "file" else None
 
-    new_msg = Message(sender_id=current_user.id, receiver_id=msg_data.receiver_id, content=content, read=False)
+    new_msg = Message(
+        sender_id=current_user.id, receiver_id=msg_data.receiver_id, content=content,
+        media_key=media_key, media_kind=media_kind, media_name=media_name, read=False,
+    )
     db.add(new_msg)
-    snippet = content if len(content) <= 40 else content[:40] + "..."
+    snippet = clip(content, media_kind)
     notify(db, msg_data.receiver_id, current_user, "new_message", str(current_user.id),
            f"New message from {display_name(current_user)}: \"{snippet}\"")
     db.commit()
     db.refresh(new_msg)
+    new_msg.sender = current_user
     broadcaster.publish(msg_data.receiver_id, {
         "type": "message.new",
+        "quiet": relation(db, recipient.id, current_user.id) is not None
+        or is_muted(db, recipient.id, person=current_user.id),
         "message": _message_response(new_msg, msg_data.receiver_id).model_dump(mode="json"),
     })
     return _message_response(new_msg, current_user.id)
@@ -167,7 +249,7 @@ def mark_thread_as_read(
         Message.receiver_id == current_user.id,
         Message.read.is_(False),
     ).update({"read": True}):
-        queue_event(db, other_user_id, {"type": "message.read", "by": str(current_user.id)})
+        _announce_read(db, current_user.id, other_user_id)
     db.commit()
     return {"message": "Messages marked as read"}
 
@@ -177,23 +259,31 @@ def get_unread_messages_count(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    direct = db.query(Message).filter(
+    """Muted chats, and people you blocked or restricted, don't add to the badge."""
+    quiet = quiet_senders(db, current_user.id)
+    direct_query = db.query(Message).filter(
         Message.receiver_id == current_user.id,
         Message.read.is_(False),
-    ).count()
-    groups = (
+    )
+    if quiet:
+        direct_query = direct_query.filter(Message.sender_id.notin_(quiet))
+    direct = direct_query.count()
+    silent_rooms = muted_rooms(db, current_user.id)
+    groups_query = (
         db.query(func.count(RoomMessage.id))
         .join(ChatMember, and_(ChatMember.room_id == RoomMessage.room_id, ChatMember.user_id == current_user.id))
         .filter(
             RoomMessage.sender_id != current_user.id,
             or_(ChatMember.last_read_at.is_(None), RoomMessage.created_at > ChatMember.last_read_at),
         )
-        .scalar()
-    ) or 0
+    )
+    if silent_rooms:
+        groups_query = groups_query.filter(RoomMessage.room_id.notin_(silent_rooms))
+    groups = groups_query.scalar() or 0
     return {"unread_count": direct + groups, "direct": direct, "groups": groups}
 
 
-def _room_summary(db: Session, room: ChatRoom, me: UUID) -> ChatRoomSummary:
+def _room_summary(db: Session, room: ChatRoom, me: UUID, muted: Optional[set] = None) -> ChatRoomSummary:
     mine = next((m for m in room.members if m.user_id == me), None)
     last = latest_preview(db, room.id)
     return ChatRoomSummary(
@@ -203,22 +293,29 @@ def _room_summary(db: Session, room: ChatRoom, me: UUID) -> ChatRoomSummary:
         project_id=room.project_id,
         member_count=len(room.members),
         unread_count=unread_count(db, room.id, me, mine.last_read_at if mine else None),
-        last_message=last.content if last else None,
+        last_message=clip(last.content, last.media_kind) if last else None,
         last_at=last.created_at if last else None,
+        muted=room.id in (muted if muted is not None else muted_rooms(db, me)),
     )
 
 
-def _room_message(msg: RoomMessage, viewer: UUID) -> RoomMessageResponse:
+def _room_message(msg: RoomMessage, viewer: UUID, reactions=None) -> RoomMessageResponse:
     sender = msg.sender
+    profile = sender.profile if sender else None
     return RoomMessageResponse(
         id=msg.id,
         room_id=msg.room_id,
         sender_id=msg.sender_id,
         sender_username=sender.username if sender else "developer",
         sender_name=display_name(sender) if sender else "Developer",
+        sender_avatar_url=profile.avatar_url if profile else None,
         content=msg.content,
         created_at=msg.created_at,
         is_outgoing=msg.sender_id == viewer,
+        media_kind=msg.media_kind,
+        media_url=f"/messages/groups/{msg.room_id}/attachments/{msg.id}" if msg.media_key else None,
+        media_name=msg.media_name,
+        reactions=reactions or [],
     )
 
 
@@ -233,7 +330,8 @@ def list_groups(db: Session = Depends(get_db), current_user: User = Depends(get_
         .filter(ChatMember.user_id == current_user.id)
         .all()
     )
-    summaries = [_room_summary(db, room, current_user.id) for room in rooms]
+    muted = muted_rooms(db, current_user.id)
+    summaries = [_room_summary(db, room, current_user.id, muted) for room in rooms]
     summaries.sort(key=lambda r: r.last_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return summaries
 
@@ -248,6 +346,8 @@ def create_group(data: ChatRoomCreate, db: Session = Depends(get_db), current_us
             raise HTTPException(status_code=404, detail="One of those people could not be found")
         if not connected(db, current_user.id, uid):
             raise HTTPException(status_code=400, detail="You can only start a group with people you're connected to")
+    if blocked_any(db, current_user.id, member_ids):
+        raise HTTPException(status_code=400, detail="You can't add someone you blocked, or who blocked you")
     room = ChatRoom(title=data.title.strip()[:120], created_by=current_user.id)
     db.add(room)
     db.flush()
@@ -271,7 +371,11 @@ def group_thread(
     current_user: User = Depends(get_current_user),
 ):
     room_for_member(db, room_id, current_user.id)
-    query = db.query(RoomMessage).options(selectinload(RoomMessage.sender)).filter(RoomMessage.room_id == room_id)
+    query = (
+        db.query(RoomMessage)
+        .options(selectinload(RoomMessage.sender).selectinload(User.profile))
+        .filter(RoomMessage.room_id == room_id)
+    )
     if before:
         query = query.filter(RoomMessage.created_at < before)
     rows = query.order_by(desc(RoomMessage.created_at)).limit(limit).all()[::-1]
@@ -280,7 +384,8 @@ def group_thread(
             ChatMember.room_id == room_id, ChatMember.user_id == current_user.id
         ).update({"last_read_at": datetime.now(timezone.utc)})
         db.commit()
-    return [_room_message(m, current_user.id) for m in rows]
+    reactions = _room_reactions(db, rows, current_user.id)
+    return [_room_message(m, current_user.id, reactions.get(m.id)) for m in rows]
 
 
 @router.put("/groups/{room_id}/read")
@@ -302,9 +407,13 @@ def send_group_message(
 ):
     room = room_for_member(db, room_id, current_user.id)
     content = data.content.strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
-    msg = post_room_message(db, room, current_user, content)
+    media_key, media_kind = take_media(current_user.id, data.media_key)
+    if not content and not media_key:
+        raise HTTPException(status_code=400, detail="Write a message or attach a photo, video or file")
+    media_name = clean_name(data.media_name, media_key) if media_kind == "file" else None
+    msg = post_room_message(
+        db, room, current_user, content, media_key=media_key, media_kind=media_kind, media_name=media_name,
+    )
     db.query(ChatMember).filter(ChatMember.room_id == room.id, ChatMember.user_id == current_user.id).update(
         {"last_read_at": datetime.now(timezone.utc)}
     )
@@ -330,6 +439,7 @@ def _custom_only(room: ChatRoom) -> None:
 
 
 def _room_details(db: Session, room: ChatRoom, me: UUID) -> ChatRoomDetails:
+    fixed = fixed_room_admins(db, room)
     admins = room_admins(db, room)
     members = (
         db.query(ChatMember)
@@ -355,6 +465,7 @@ def _room_details(db: Session, room: ChatRoom, me: UUID) -> ChatRoomDetails:
             full_name=display_name(m.user),
             avatar_url=m.user.profile.avatar_url if m.user.profile else None,
             is_admin=m.user_id in admins,
+            admin_fixed=m.user_id in fixed,
             team_role=team_roles.get(m.user_id),
             joined_at=m.joined_at,
         )
@@ -369,6 +480,7 @@ def _room_details(db: Session, room: ChatRoom, me: UUID) -> ChatRoomDetails:
         project_title=project_title,
         created_at=room.created_at,
         is_admin=me in admins,
+        muted=is_muted(db, me, room=room.id),
         members=rows,
     )
 
@@ -425,6 +537,9 @@ def add_group_members(room_id: UUID, data: ChatRoomMembersAdd, db: Session = Dep
             raise HTTPException(status_code=404, detail="One of those people could not be found")
         if not connected(db, current_user.id, uid):
             raise HTTPException(status_code=400, detail="You can only add people you're connected to")
+    if blocked_any(db, current_user.id, new_ids):
+        raise HTTPException(status_code=400, detail="You can't add someone you blocked, or who blocked you")
+    for uid in new_ids:
         db.add(ChatMember(room_id=room.id, user_id=uid))
     db.flush()
     db.refresh(room)
@@ -439,6 +554,11 @@ def remove_group_member(room_id: UUID, user_id: UUID, db: Session = Depends(get_
     _custom_only(room)
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Use Leave group to leave")
+    fixed = fixed_room_admins(db, room)
+    if user_id in fixed:
+        raise HTTPException(status_code=403, detail="The person who started the group can't be removed")
+    if user_id in room_admins(db, room) and current_user.id not in fixed:
+        raise HTTPException(status_code=403, detail="Only the person who started the group can remove another admin")
     removed = db.query(ChatMember).filter(ChatMember.room_id == room.id, ChatMember.user_id == user_id).delete()
     if not removed:
         raise HTTPException(status_code=404, detail="That person is not in this group")
@@ -448,6 +568,33 @@ def remove_group_member(room_id: UUID, user_id: UUID, db: Session = Depends(get_
     notify_room(db, room, skip=current_user.id)
     db.commit()
     return _room_details(db, room, current_user.id)
+
+
+def _set_admin(db: Session, room_id: UUID, user_id: UUID, me: User, value: bool) -> ChatRoomDetails:
+    room = _admin_room(db, room_id, me.id)
+    _custom_only(room)
+    member = db.query(ChatMember).filter(ChatMember.room_id == room.id, ChatMember.user_id == user_id).first()
+    if member is None:
+        raise HTTPException(status_code=404, detail="That person is not in this group")
+    if user_id in fixed_room_admins(db, room):
+        raise HTTPException(status_code=400, detail="The person who started the group is always an admin")
+    if not value and user_id != me.id and me.id not in fixed_room_admins(db, room):
+        raise HTTPException(status_code=403, detail="Only the person who started the group can remove another admin")
+    member.is_admin = value
+    db.flush()
+    notify_room(db, room, skip=me.id)
+    db.commit()
+    return _room_details(db, room, me.id)
+
+
+@router.post("/groups/{room_id}/admins/{user_id}", response_model=ChatRoomDetails)
+def make_group_admin(room_id: UUID, user_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _set_admin(db, room_id, user_id, current_user, True)
+
+
+@router.delete("/groups/{room_id}/admins/{user_id}", response_model=ChatRoomDetails)
+def remove_group_admin(room_id: UUID, user_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _set_admin(db, room_id, user_id, current_user, False)
 
 
 @router.post("/groups/{room_id}/leave")
@@ -464,9 +611,111 @@ def leave_group(room_id: UUID, db: Session = Depends(get_db), current_user: User
         db.query(ChatRoom).filter(ChatRoom.id == room.id).delete(synchronize_session=False)
     else:
         if room.created_by == current_user.id:
-            room.created_by = remaining[0].user_id
+            successor = next((m for m in remaining if m.is_admin), remaining[0])
+            room.created_by = successor.user_id
         db.flush()
         db.refresh(room)
         notify_room(db, room)
     db.commit()
     return {"message": "You left the group"}
+
+
+def _direct_for(db: Session, message_id: UUID, me: UUID) -> Message:
+    msg = (
+        db.query(Message)
+        .options(selectinload(Message.sender).selectinload(User.profile))
+        .filter(Message.id == message_id)
+        .first()
+    )
+    if msg is None or me not in (msg.sender_id, msg.receiver_id):
+        raise HTTPException(status_code=404, detail="Message not found")
+    return msg
+
+
+def _room_for(db: Session, room_id: UUID, message_id: UUID, me: UUID) -> RoomMessage:
+    room_for_member(db, room_id, me)
+    msg = (
+        db.query(RoomMessage)
+        .options(selectinload(RoomMessage.sender).selectinload(User.profile))
+        .filter(RoomMessage.id == message_id, RoomMessage.room_id == room_id)
+        .first()
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return msg
+
+
+def _publish_direct_reaction(msg: Message) -> None:
+    broadcaster.publish(msg.receiver_id, {
+        "type": "message.reaction", "message_id": str(msg.id), "with_user": str(msg.sender_id),
+    })
+    broadcaster.publish(msg.sender_id, {
+        "type": "message.reaction", "message_id": str(msg.id), "with_user": str(msg.receiver_id),
+    })
+
+
+@router.post("/attachments", response_model=AttachmentStored)
+def upload_attachment(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    key, kind = store_upload(current_user.id, file)
+    return AttachmentStored(
+        media_key=key, media_kind=kind, media_name=clean_name(file.filename, key) if kind == "file" else None,
+    )
+
+
+@router.get("/attachments/{message_id}")
+def direct_attachment(message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    msg = _direct_for(db, message_id, current_user.id)
+    if not msg.media_key:
+        raise HTTPException(status_code=404, detail="That file is gone")
+    return media_response(msg.media_key, msg.media_name)
+
+
+@router.post("/{message_id}/reactions", response_model=MessageResponse)
+def react_to_message(
+    message_id: UUID,
+    data: ReactionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    msg = _direct_for(db, message_id, current_user.id)
+    toggle_reaction(db, MessageReaction, "message_id", msg.id, current_user.id, normalize_emoji(data.emoji))
+    db.commit()
+    _publish_direct_reaction(msg)
+    reactions = _direct_reactions(db, [msg], current_user.id)
+    return _message_response(msg, current_user.id, reactions.get(msg.id))
+
+
+@router.get("/groups/{room_id}/attachments/{message_id}")
+def group_attachment(
+    room_id: UUID,
+    message_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    msg = _room_for(db, room_id, message_id, current_user.id)
+    if not msg.media_key:
+        raise HTTPException(status_code=404, detail="That file is gone")
+    return media_response(msg.media_key, msg.media_name)
+
+
+@router.post("/groups/{room_id}/{message_id}/reactions", response_model=RoomMessageResponse)
+def react_to_group_message(
+    room_id: UUID,
+    message_id: UUID,
+    data: ReactionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    room = room_for_member(db, room_id, current_user.id)
+    msg = _room_for(db, room_id, message_id, current_user.id)
+    toggle_reaction(db, RoomMessageReaction, "message_id", msg.id, current_user.id, normalize_emoji(data.emoji))
+    for member in room.members:
+        queue_event(db, member.user_id, {
+            "type": "message.reaction", "room_id": str(room.id), "message_id": str(msg.id),
+        })
+    db.commit()
+    reactions = _room_reactions(db, [msg], current_user.id)
+    return _room_message(msg, current_user.id, reactions.get(msg.id))

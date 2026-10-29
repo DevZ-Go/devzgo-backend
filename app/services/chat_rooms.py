@@ -79,8 +79,8 @@ def sync_my_project_rooms(db: Session, me: UUID) -> None:
         sync_project_room(db, project)
 
 
-def room_admins(db: Session, room: ChatRoom) -> set[UUID]:
-    """Who runs a group: the starter of a custom group, or a project's owner and Managers."""
+def fixed_room_admins(db: Session, room: ChatRoom) -> set[UUID]:
+    """Admins by position: the starter of a custom group, or a project's owner and Managers."""
     if room.project_id is None:
         return {room.created_by}
     project = db.query(Project).filter(Project.id == room.project_id).first()
@@ -90,6 +90,12 @@ def room_admins(db: Session, room: ChatRoom) -> set[UUID]:
         ProjectCollaborator.project_id == project.id, ProjectCollaborator.access == "manager"
     )
     return {project.owner_id, *(row[0] for row in managers)}
+
+
+def room_admins(db: Session, room: ChatRoom) -> set[UUID]:
+    """Fixed admins plus members another admin has promoted."""
+    promoted = db.query(ChatMember.user_id).filter(ChatMember.room_id == room.id, ChatMember.is_admin.is_(True))
+    return fixed_room_admins(db, room) | {row[0] for row in promoted}
 
 
 def notify_room(db: Session, room: ChatRoom, skip: UUID | None = None) -> None:
@@ -113,11 +119,23 @@ def room_for_member(db: Session, room_id: UUID, me: UUID) -> ChatRoom:
     return room
 
 
-def post_room_message(db: Session, room: ChatRoom, sender: User, content: str) -> RoomMessage:
-    msg = RoomMessage(room_id=room.id, sender_id=sender.id, content=content)
+def post_room_message(
+    db: Session,
+    room: ChatRoom,
+    sender: User,
+    content: str,
+    media_key: Optional[str] = None,
+    media_kind: Optional[str] = None,
+    media_name: Optional[str] = None,
+) -> RoomMessage:
+    msg = RoomMessage(
+        room_id=room.id, sender_id=sender.id, content=content or "",
+        media_key=media_key, media_kind=media_kind, media_name=media_name,
+    )
     db.add(msg)
     db.flush()
     db.refresh(msg)
+    avatar = sender.profile.avatar_url if sender.profile else None
     payload = {
         "type": "message.room",
         "room_id": str(room.id),
@@ -127,7 +145,12 @@ def post_room_message(db: Session, room: ChatRoom, sender: User, content: str) -
             "sender_id": str(sender.id),
             "sender_username": sender.username,
             "sender_name": display_name(sender),
-            "content": content,
+            "sender_avatar_url": avatar,
+            "content": content or "",
+            "media_kind": media_kind,
+            "media_url": f"/messages/groups/{room.id}/attachments/{msg.id}" if media_key else None,
+            "media_name": media_name,
+            "reactions": [],
             "created_at": (msg.created_at or datetime.now(timezone.utc)).isoformat(),
             "is_outgoing": False,
         },

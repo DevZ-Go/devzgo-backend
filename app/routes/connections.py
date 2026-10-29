@@ -25,6 +25,7 @@ from app.schemas.network import (
     ConnectionUserSummary,
 )
 from app.services.pagination import paginate
+from app.services.safety import blocked_between
 from app.services.social import accepts_connection_requests, display_name, notify, user_summary
 
 router = APIRouter(prefix="/connections", tags=["Connections"])
@@ -135,6 +136,8 @@ def send_connection_request(data: ConnectionRequestCreate, db: Session = Depends
     target = db.query(User).filter(User.id == data.target_user_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="Target developer not found")
+    if blocked_between(db, me.id, target.id):
+        raise HTTPException(status_code=403, detail="You can't connect with this person")
     if not accepts_connection_requests(target):
         raise HTTPException(status_code=403, detail="This person is not accepting connection requests")
 

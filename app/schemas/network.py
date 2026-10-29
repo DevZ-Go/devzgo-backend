@@ -76,6 +76,8 @@ class UserProfileUpdate(UserProfileBase):
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
     notify_challenges: Optional[bool] = None
+    challenge_notices: Optional[Literal["off", "open_to_work", "always"]] = None
+    challenge_invites: Optional[Literal["off", "open_to_work", "always"]] = None
     start_page: Optional[Literal["home", "resume"]] = None
     open_to_work: Optional[bool] = None
     work_types: Optional[List[WorkType]] = Field(default=None, max_length=len(WORK_TYPES))
@@ -118,6 +120,8 @@ class UserProfileResponse(UserProfileBase):
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
     notify_challenges: Optional[bool] = None
+    challenge_notices: Optional[str] = None
+    challenge_invites: Optional[str] = None
     start_page: Optional[str] = None
     account_type: str = "developer"
     tour_version: Optional[int] = None  # owner only
@@ -339,9 +343,17 @@ class ConnectionStatusResponse(BaseModel):
     connection_id: Optional[UUID] = None
 
 # ==================== MESSAGES ====================
+class ReactionSummary(BaseModel):
+    emoji: str
+    count: int
+    mine: bool = False
+
+
 class MessageCreate(BaseModel):
     receiver_id: UUID
-    content: str = Field(min_length=1, max_length=5000)
+    content: str = Field(default="", max_length=5000)
+    media_key: Optional[str] = Field(default=None, max_length=160)
+    media_name: Optional[str] = Field(default=None, max_length=255)
 
 class MessageResponse(BaseModel):
     id: UUID
@@ -351,14 +363,34 @@ class MessageResponse(BaseModel):
     read: bool
     created_at: datetime
     is_outgoing: bool = False
+    sender_username: Optional[str] = None
+    sender_name: Optional[str] = None
+    sender_avatar_url: Optional[str] = None
+    media_kind: Optional[str] = None
+    media_url: Optional[str] = None
+    media_name: Optional[str] = None
+    reactions: List[ReactionSummary] = []
 
     class Config:
         from_attributes = True
+
+
+class AttachmentStored(BaseModel):
+    media_key: str
+    media_kind: Literal["image", "video", "file"]
+    media_name: Optional[str] = None
+
+
+class ReactionCreate(BaseModel):
+    emoji: str = Field(min_length=1, max_length=8)
 
 class ConversationResponse(BaseModel):
     other_user: ConnectionUserSummary
     last_message: MessageResponse
     unread_count: int = 0
+    muted: bool = False
+    relation: Optional[Literal["block", "restrict"]] = None
+    blocked_me: bool = False
 
 
 class ChatRoomCreate(BaseModel):
@@ -375,6 +407,7 @@ class ChatRoomSummary(BaseModel):
     unread_count: int = 0
     last_message: Optional[str] = None
     last_at: Optional[datetime] = None
+    muted: bool = False
 
 
 class ChatRoomUpdate(BaseModel):
@@ -391,6 +424,8 @@ class ChatRoomMember(BaseModel):
     full_name: Optional[str] = None
     avatar_url: Optional[str] = None
     is_admin: bool = False
+    # Starter, project owner or Manager: their admin role can't be taken away from inside the chat.
+    admin_fixed: bool = False
     team_role: Optional[str] = None
     joined_at: Optional[datetime] = None
 
@@ -403,11 +438,14 @@ class ChatRoomDetails(BaseModel):
     project_title: Optional[str] = None
     created_at: Optional[datetime] = None
     is_admin: bool = False
+    muted: bool = False
     members: List[ChatRoomMember]
 
 
 class RoomMessageCreate(BaseModel):
-    content: str = Field(min_length=1, max_length=5000)
+    content: str = Field(default="", max_length=5000)
+    media_key: Optional[str] = Field(default=None, max_length=160)
+    media_name: Optional[str] = Field(default=None, max_length=255)
 
 
 class RoomMessageResponse(BaseModel):
@@ -416,9 +454,44 @@ class RoomMessageResponse(BaseModel):
     sender_id: UUID
     sender_username: str
     sender_name: str
+    sender_avatar_url: Optional[str] = None
     content: str
     created_at: datetime
     is_outgoing: bool = False
+    media_kind: Optional[str] = None
+    media_url: Optional[str] = None
+    media_name: Optional[str] = None
+    reactions: List[ReactionSummary] = []
+
+
+# ==================== SAFETY ====================
+class SafetyChoice(BaseModel):
+    kind: Literal["block", "restrict"]
+
+
+class SafetyPerson(BaseModel):
+    user: ConnectionUserSummary
+    kind: Literal["block", "restrict"]
+    since: datetime
+
+
+class MutedChat(BaseModel):
+    user: Optional[ConnectionUserSummary] = None
+    room_id: Optional[UUID] = None
+    room_title: Optional[str] = None
+    since: datetime
+
+
+class SafetyOverview(BaseModel):
+    blocked: List[SafetyPerson] = []
+    restricted: List[SafetyPerson] = []
+    muted: List[MutedChat] = []
+
+
+class PersonSafety(BaseModel):
+    relation: Optional[Literal["block", "restrict"]] = None
+    blocked_me: bool = False
+    muted: bool = False
 
 # ==================== COLLABORATIONS ====================
 AccessLevel = Literal["viewer", "commenter", "editor", "manager"]

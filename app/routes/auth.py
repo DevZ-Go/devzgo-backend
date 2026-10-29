@@ -121,9 +121,13 @@ def login(
 @router.post("/forgot-password")
 def forgot_password(data: ForgotPasswordRequest, background: BackgroundTasks, db: Session = Depends(get_db)):
     """Always the same answer, so it cannot be used to find out which emails have accounts."""
-    reply = {"message": "If that email has an account, a reset link is on its way."}
-    user = db.query(User).filter(func.lower(User.email) == data.email.strip().lower()).first()
-    if not user:
+    reply = {"message": "If that matches an account, a reset link is on its way to its email address."}
+    handle = data.email.strip().lower().lstrip("@")
+    if "@" in handle:
+        user = db.query(User).filter(func.lower(User.email) == handle).first()
+    else:
+        user = db.query(User).filter(func.lower(User.username) == handle).first()
+    if not user or not user.email:
         return reply
 
     now = datetime.now(timezone.utc)
