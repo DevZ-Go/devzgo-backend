@@ -29,7 +29,7 @@ print("[entrypoint] Timed out waiting for database.", file=sys.stderr)
 sys.exit(1)
 PY
 
-echo "[entrypoint] Applying migrations (local databases) and seeding tech stacks..."
+echo "[entrypoint] Checking the schema (migrates local databases only) and seeding tech stacks..."
 python -m app.scripts.bootstrap_db
 
 echo "[entrypoint] Starting uvicorn..."
