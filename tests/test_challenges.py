@@ -141,6 +141,79 @@ def test_deadlines_close_submissions_in_utc(client, make_user, make_recruiter):
     assert late.status_code == 400 and "no longer accepting" in late.json()["detail"]
 
 
+def test_public_challenges_notify_only_developers_who_opted_in(client, make_user, make_recruiter):
+    recruiter, _ = make_recruiter()
+    opted, _ = make_user()
+    quiet, _ = make_user()
+    assert client.put("/profiles/me", headers=opted, json={"notify_challenges": True}).status_code == 200
+    cid = _open(client, recruiter, visibility="public")
+    heard = client.get("/notifications", headers=opted).json()
+    assert any(n["type"] == "challenge_posted" and n["related_id"] == cid for n in heard)
+    assert client.get("/notifications", headers=quiet).json() == []
+    invite_only = _open(client, recruiter)
+    assert not any(n["related_id"] == invite_only for n in client.get("/notifications", headers=opted).json())
+
+
+def test_assessment_choice_covers_posts_and_invitations(client, make_user, make_recruiter):
+    recruiter, _ = make_recruiter()
+    selective, selective_id = make_user()
+    quiet, quiet_id = make_user()
+    assert client.put("/profiles/me", headers=selective, json={
+        "challenge_notices": "open_to_work", "challenge_invites": "open_to_work",
+    }).json()["challenge_notices"] == "open_to_work"
+    assert client.put("/profiles/me", headers=quiet, json={
+        "challenge_notices": "off", "challenge_invites": "off",
+    }).json()["challenge_invites"] == "off"
+
+    early = client.post(f"/challenges/{_open(client, recruiter)}/invitations", headers=recruiter,
+                        json={"developer_ids": [selective_id, quiet_id]}).json()["skipped"]
+    assert early[selective_id] == "Only accepts assessments while open to work"
+    assert early[quiet_id] == "Not accepting assessments"
+
+    public = _open(client, recruiter, visibility="public")
+    assert not any(n["related_id"] == public for n in client.get("/notifications", headers=selective).json())
+    assert client.get("/notifications", headers=quiet).json() == []
+
+    _open_to_work(client, selective)
+    heard = _open(client, recruiter, visibility="public")
+    assert any(n["type"] == "challenge_posted" and n["related_id"] == heard for n in client.get("/notifications", headers=selective).json())
+    assert not any(n["related_id"] == heard for n in client.get("/notifications", headers=quiet).json())
+    invited = client.post(f"/challenges/{_open(client, recruiter)}/invitations", headers=recruiter,
+                          json={"developer_ids": [selective_id]}).json()
+    assert invited["invited"] == [selective_id]
+
+    client.put("/profiles/me", headers=selective, json={"challenge_notices": "always", "open_to_work": False})
+    paused = _open(client, recruiter, visibility="public")
+    assert not any(n["related_id"] == paused for n in client.get("/notifications", headers=selective).json())
+    client.put("/profiles/me", headers=selective, json={"challenge_invites": "always"})
+    always = _open(client, recruiter, visibility="public")
+    notes = client.get("/notifications", headers=selective).json()
+    assert any(n["related_id"] == always for n in notes)
+    private = _open(client, recruiter)
+    assert not any(n["related_id"] == private for n in client.get("/notifications", headers=selective).json())
+
+
+def test_developers_can_stop_receiving_challenges_entirely(client, make_user, make_recruiter):
+    recruiter, _ = make_recruiter()
+    dev, _ = make_user()
+    listed = _open(client, recruiter, visibility="public")
+    mine = client.get("/assessments", headers=dev).json()
+    assert mine["receiving"] is True and mine["challenge_choice"] == "always"
+    assert listed in [c["id"] for c in mine["open_challenges"]]
+
+    client.put("/profiles/me", headers=dev, json={"challenge_invites": "off", "challenge_notices": "always"})
+    hidden = client.get("/assessments", headers=dev).json()
+    assert hidden["receiving"] is False and hidden["open_challenges"] == []
+    quiet = _open(client, recruiter, visibility="public")
+    assert not any(n["related_id"] == quiet for n in client.get("/notifications", headers=dev).json())
+
+    client.put("/profiles/me", headers=dev, json={"challenge_invites": "open_to_work"})
+    assert client.get("/assessments", headers=dev).json()["receiving"] is False
+    _open_to_work(client, dev)
+    back = client.get("/assessments", headers=dev).json()
+    assert back["receiving"] is True and quiet in [c["id"] for c in back["open_challenges"]]
+
+
 def test_public_challenges_need_no_invitation(client, make_user, make_recruiter):
     recruiter, _ = make_recruiter()
     dev, _ = make_user()

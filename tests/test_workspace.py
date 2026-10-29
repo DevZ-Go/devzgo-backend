@@ -31,10 +31,12 @@ def _project(client, headers, **fields):
     return pid
 
 
-def _connect(user_id: str):
+def _connect(user_id: str, github_user_id: int | None = None):
+    # Each DevZ-Go user gets a distinct GitHub id. The real callback rejects a second link.
+    gid = github_user_id if github_user_id is not None else int(UUID(user_id).hex[:12], 16)
     with SessionLocal() as db:
         db.add(GitHubConnection(
-            user_id=UUID(user_id), login="octo", status="active", github_user_id=1,
+            user_id=UUID(user_id), login="octo", status="active", github_user_id=gid,
             access_token_enc=crypto.encrypt("gho_testtoken"),
         ))
         db.commit()
@@ -173,8 +175,35 @@ def test_push_permission_is_required(client, make_user, monkeypatch):
     assert res.status_code == 403
 
 
+def test_commenters_cannot_open_the_code_workspace(client, make_user):
+    owner, _ = make_user()
+    commenter, _ = make_user()
+    pid = _project(client, owner, **GITHUB)
+    _invite(client, owner, pid, commenter, "commenter")
+    assert client.get(f"/projects/{pid}/workspace", headers=commenter).status_code == 403
+    assert client.get(f"/projects/{pid}/workspace", headers=owner).status_code == 200
+
+
+def test_a_github_account_cannot_be_linked_twice(client, make_user):
+    from app.models.user import User
+    from app.services.github_connection import GitHubAccountTaken, save_tokens
+
+    _, first = make_user()
+    _, second = make_user()
+    body = {"access_token": "gho_testtoken", "expires_in": 3600}
+    profile = {"id": 424242, "login": "octo"}
+    with SessionLocal() as db:
+        save_tokens(db, db.get(User, UUID(first)), body, profile)
+        with pytest.raises(GitHubAccountTaken):
+            save_tokens(db, db.get(User, UUID(second)), body, profile)
+        again = save_tokens(db, db.get(User, UUID(first)), {"access_token": "gho_rotated", "expires_in": 3600}, profile)
+        assert again.login == "octo"
+
+
 def test_editing_stays_disabled_until_the_app_is_configured(client, make_user, monkeypatch):
     owner, _ = make_user()
+    for name in ("GITHUB_APP_CLIENT_ID", "GITHUB_APP_CLIENT_SECRET", "GITHUB_APP_SLUG"):
+        monkeypatch.delenv(name, raising=False)
     assert client.post("/github/connection/authorize", headers=owner).status_code == 503
     monkeypatch.setenv("GITHUB_APP_CLIENT_ID", "cid")
     monkeypatch.setenv("GITHUB_APP_CLIENT_SECRET", "sec")

@@ -6,7 +6,7 @@ Audit rows are kept, and they never store file content or tokens.
 
 import uuid
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, false as sa_false
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, false as sa_false
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
@@ -18,9 +18,11 @@ SYNC_JOB_DAYS = 90
 
 class GitHubConnection(Base):
     __tablename__ = "github_connections"
+    __table_args__ = (Index("uq_github_connections_github_user", "github_user_id", unique=True),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    # One GitHub account belongs to one DevZ-Go user. Nulls are allowed more than once.
     github_user_id = Column(BigInteger, nullable=True)
     login = Column(String(100), nullable=True)
     access_token_enc = Column(Text, nullable=True)

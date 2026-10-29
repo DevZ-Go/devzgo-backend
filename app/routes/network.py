@@ -165,16 +165,23 @@ def create_feed_post(post_data: FeedPostCreate, db: Session = Depends(get_db), c
     content = post_data.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="Post cannot be empty")
+    project = None
     if post_data.project_id:
         project = db.query(Project).filter(Project.id == post_data.project_id).first()
         access = project_access(db, project, current_user.id) if project else {}
-        if not (access.get("owner") or access.get("member")):
+        if post_data.activity_type == "project_share":
+            if not access.get("view"):
+                raise HTTPException(status_code=403, detail="You can't share a project you can't see.")
+        elif not (access.get("owner") or access.get("member")):
             raise HTTPException(status_code=403, detail="You can only post about projects you own or collaborate on")
 
     act = NetworkActivity(user_id=current_user.id, activity_type=post_data.activity_type, title=post_data.title,
                           content=content, project_id=post_data.project_id, media_url=post_data.media_url, is_demo=False)
     db.add(act)
     db.flush()
+    if post_data.activity_type == "project_share" and project is not None:
+        notify(db, project.owner_id, current_user, "project_share", str(project.id),
+               f"{display_name(current_user)} shared your project on the network.", once=True)
     for uid in _audience(db, current_user.id):
         queue_event(db, uid, {"type": "feed.new", "activity_id": str(act.id)})
     db.commit()

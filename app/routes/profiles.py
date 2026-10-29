@@ -47,7 +47,7 @@ OWN_SETTINGS = (
     "profile_visibility", "message_policy", "comment_policy", "activity_visibility",
     "connection_visibility", "collaboration_policy", "email_visibility", "resume_visibility",
     "notify_likes", "notify_comments", "notify_shares", "notify_connections",
-    "notify_messages", "notify_collaborations",
+    "notify_messages", "notify_collaborations", "notify_challenges", "challenge_notices", "challenge_invites", "start_page",
 )
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
@@ -177,6 +177,11 @@ def update_my_profile(
     for field in ("work_types", "work_arrangements"):
         if field in changes:
             changes[field] = ",".join(dict.fromkeys(changes[field] or [])) or None
+    # The older on/off switch still works. The choice (off, open to work, always) is what publish uses.
+    if "notify_challenges" in changes and "challenge_notices" not in changes:
+        changes["challenge_notices"] = "always" if changes["notify_challenges"] else "off"
+    if "challenge_notices" in changes:
+        changes["notify_challenges"] = changes["challenge_notices"] != "off"
     # Only fields sent by the client change; sending "" or null clears a field.
     for field, value in changes.items():
         if field == "timezone" and not value:

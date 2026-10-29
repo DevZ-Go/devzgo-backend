@@ -36,7 +36,8 @@ class UserLogin(BaseModel):
     password: str
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    # The account's email address or its username.
+    email: str = Field(min_length=1, max_length=255)
 
 class ResetPasswordRequest(BaseModel):
     token: str = Field(min_length=10, max_length=200)

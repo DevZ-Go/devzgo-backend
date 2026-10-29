@@ -12,6 +12,10 @@ from app.models.workspace import GitHubConnection
 from app.services import crypto, github_app as gh
 
 
+class GitHubAccountTaken(Exception):
+    """This GitHub account is already linked to a different DevZ-Go user."""
+
+
 def status_of(row: GitHubConnection | None) -> dict:
     if row is None:
         return {"connected": False, "configured": gh.configured() and crypto.configured(), "status": None, "login": None}
@@ -25,11 +29,19 @@ def status_of(row: GitHubConnection | None) -> dict:
 
 
 def save_tokens(db: Session, user: User, body: dict, profile: dict) -> GitHubConnection:
+    github_id = profile.get("id")
+    if github_id is not None:
+        taken = db.query(GitHubConnection).filter(
+            GitHubConnection.github_user_id == int(github_id),
+            GitHubConnection.user_id != user.id,
+        ).first()
+        if taken is not None:
+            raise GitHubAccountTaken()
     row = db.query(GitHubConnection).filter_by(user_id=user.id).one_or_none()
     if row is None:
         row = GitHubConnection(user_id=user.id)
         db.add(row)
-    row.github_user_id = profile.get("id")
+    row.github_user_id = int(github_id) if github_id is not None else None
     row.login = (profile.get("login") or "")[:100] or None
     row.access_token_enc = crypto.encrypt(body["access_token"])
     refresh = body.get("refresh_token")

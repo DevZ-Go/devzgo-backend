@@ -105,6 +105,10 @@ def _setting(user: User, field: str, default):
 
 
 def may_message(db: Session, sender_id: UUID, recipient: User) -> bool:
+    from app.services.safety import blocked_between
+
+    if blocked_between(db, sender_id, recipient.id):
+        return False
     if _setting(recipient, "message_policy", "anyone") != "connections":
         return True
     return is_connected(db, sender_id, recipient.id) or accepted_recruitment(db, sender_id, recipient.id)
@@ -184,6 +188,7 @@ NOTIFY_FIELDS = {
     "collaboration_joined": "notify_collaborations",
     "collaboration_left": "notify_collaborations",
     "collaboration_removed": "notify_collaborations",
+    "challenge_posted": "notify_challenges",
     "recruitment_request": "notify_messages",
     "recruitment_accepted": "notify_messages",
     "recruitment_declined": "notify_messages",
@@ -235,6 +240,12 @@ def notify(
 ) -> Optional[Notification]:
     """Queue a notification (committed by the caller). `once` skips it if the same one already exists."""
     if recipient_id == actor.id:
+        return None
+    from app.services.safety import is_muted, silenced_by
+
+    if silenced_by(db, recipient_id, actor.id):
+        return None
+    if type_ == "new_message" and is_muted(db, recipient_id, person=actor.id):
         return None
     field = NOTIFY_FIELDS.get(type_)
     if field:

@@ -9,8 +9,9 @@ from app.models.associations import project_tech
 from app.models.file import File
 from app.models.network import NetworkActivity, ActivityLike, ActivityComment
 from app.models.connection import Connection
-from app.models.message import Message
-from app.models.chat import ChatRoom, ChatMember, RoomMessage
+from app.models.message import Message, MessageReaction
+from app.models.chat import ChatRoom, ChatMember, RoomMessage, RoomMessageReaction
+from app.models.safety import ChatMute, UserBlock
 from app.models.collaboration import CollaborationRequest, ProjectCollaborator, ProjectInvitation
 from app.models.github_history import ProjectCommit, ProjectContributor, ProjectPush
 from app.models.notification import Notification

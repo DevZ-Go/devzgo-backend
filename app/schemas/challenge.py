@@ -178,6 +178,8 @@ class AssessmentsOut(BaseModel):
     invitations: List[DeveloperInvitation]
     open_challenges: List[ChallengeSummary]
     submissions: List[DeveloperSubmission]
+    receiving: bool = True
+    challenge_choice: Literal["off", "open_to_work", "always"] = "always"
 
 
 class SharedRating(BaseModel):

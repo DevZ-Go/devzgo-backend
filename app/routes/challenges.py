@@ -13,7 +13,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.dependencies import get_current_user_optional, require_developer, require_recruiter
@@ -27,6 +27,7 @@ from app.models.challenge import (
     TechnicalChallenge,
 )
 from app.models.collaboration import ProjectCollaborator
+from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.challenge import (
@@ -197,6 +198,28 @@ def publish_challenge(challenge_id: UUID, db: Session = Depends(get_db), me: Use
     _check_deadline(ch.deadline_at)
     ch.status, ch.closed_at = "open", None
     ch.published_at = ch.published_at or _now()
+    if ch.visibility == "public":
+        company = _company(me) or "A recruiter"
+        opted_in = (
+            db.query(User.id)
+            .join(UserProfile, UserProfile.user_id == User.id)
+            .filter(
+                User.account_type != "recruiter",
+                User.id != me.id,
+                or_(
+                    UserProfile.challenge_invites == "always",
+                    and_(UserProfile.challenge_invites == "open_to_work", UserProfile.open_to_work.is_(True)),
+                ),
+                or_(
+                    UserProfile.challenge_notices == "always",
+                    and_(UserProfile.challenge_notices == "open_to_work", UserProfile.open_to_work.is_(True)),
+                ),
+            )
+            .all()
+        )
+        for (developer_id,) in opted_in:
+            notify(db, developer_id, me, "challenge_posted", str(ch.id),
+                   f"{company} posted a technical challenge: {ch.title}.")
     db.commit()
     db.refresh(ch)
     return _recruiter_view(db, ch)
@@ -233,7 +256,21 @@ def _may_invite(db: Session, me: User, developer: Optional[User]) -> Optional[st
         return "Profile is only open to their connections"
     if not ((profile and profile.open_to_work) or may_message(db, me.id, developer)):
         return "Only takes messages from connections and is not open to work"
+    if _challenge_choice(profile) == "off":
+        return "Not accepting assessments"
+    if not _receives_challenges(profile):
+        return "Only accepts assessments while open to work"
     return None
+
+
+def _challenge_choice(profile: Optional[UserProfile]) -> str:
+    return (profile.challenge_invites if profile else None) or "always"
+
+
+def _receives_challenges(profile: Optional[UserProfile]) -> bool:
+    """The developer's own choice: always, never, or only while open to work."""
+    choice = _challenge_choice(profile)
+    return choice == "always" or (choice == "open_to_work" and bool(profile and profile.open_to_work))
 
 
 @router.post("/challenges/{challenge_id}/invitations", response_model=InviteResult,
@@ -384,6 +421,9 @@ def _respond(db: Session, invitation_id: UUID, me: User, answer: str) -> Develop
     if invite.status != "pending":
         raise HTTPException(status_code=400, detail="You already answered this invitation")
     invite.status, invite.responded_at = answer, _now()
+    ch = invite.challenge
+    notify(db, ch.recruiter_id, me, "challenge_response", str(ch.id),
+           f"{display_name(me)} {answer} your invitation to {ch.title}.")
     db.commit()
     db.refresh(invite)
     return DeveloperInvitation(id=invite.id, status=invite.status, message=invite.message, created_at=invite.created_at,
@@ -471,16 +511,19 @@ def my_assessments(db: Session = Depends(get_db), me: User = Depends(require_dev
     subs = (db.query(ChallengeSubmission).filter(ChallengeSubmission.developer_id == me.id)
             .order_by(ChallengeSubmission.submitted_at.desc()).all())
     involved = {i.challenge_id for i in invites} | {s.challenge_id for s in subs}
+    receiving = _receives_challenges(me.profile)
     public = (db.query(TechnicalChallenge)
               .filter(TechnicalChallenge.visibility == "public", TechnicalChallenge.status == "open",
                       TechnicalChallenge.recruiter_id != me.id)
-              .order_by(TechnicalChallenge.published_at.desc()).limit(50).all())
+              .order_by(TechnicalChallenge.published_at.desc()).limit(50).all()) if receiving else []
     return AssessmentsOut(
         invitations=[DeveloperInvitation(id=i.id, status=i.status, message=i.message, created_at=i.created_at,
                                          challenge=_summary(i.challenge)) for i in invites],
         open_challenges=[_summary(ch) for ch in public if ch.id not in involved and _accepting(ch)],
         submissions=[DeveloperSubmission(**_submission_out(s, for_developer=True).model_dump(), challenge=_detail(s.challenge))
                      for s in subs],
+        receiving=receiving,
+        challenge_choice=_challenge_choice(me.profile),
     )
 
 
