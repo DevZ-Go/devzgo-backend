@@ -7,3 +7,9 @@ __pycache__
 .mypy_cache
 *.pyc
 storage
+
+# Only numbered migrations (NNN_name.py, all committed) go into the image, so a stray local
+# `alembic revision --autogenerate` file can't add a second head to anyone's container.
+alembic/versions/*
+!alembic/versions/[0-9][0-9][0-9]_*.py
+alembic/backup

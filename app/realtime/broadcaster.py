@@ -31,18 +31,28 @@ class Broadcaster:
         url = os.getenv("REDIS_URL")
         if url:
             import redis
-            import redis.asyncio as aioredis
 
-            self._redis = redis.Redis.from_url(url)
-            asyncio.create_task(self._listen(aioredis.from_url(url)))
+            self._redis = redis.Redis.from_url(url, health_check_interval=30)
+            asyncio.create_task(self._listen(url))
             log.info("Realtime: using Redis pub/sub")
 
-    async def _listen(self, client) -> None:
-        pubsub = client.pubsub()
-        await pubsub.subscribe(CHANNEL)
-        async for msg in pubsub.listen():
-            if msg.get("type") == "message":
-                self._deliver(msg["data"])
+    async def _listen(self, url: str) -> None:
+        import redis.asyncio as aioredis
+
+        while True:
+            try:
+                client = aioredis.from_url(url, health_check_interval=30)
+                pubsub = client.pubsub()
+                await pubsub.subscribe(CHANNEL)
+                async for msg in pubsub.listen():
+                    if msg.get("type") == "message":
+                        self._deliver(msg["data"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Hosted Redis drops idle connections; keep listening or other machines' events stop arriving.
+                log.warning("Realtime: Redis connection lost (%s); reconnecting in 5s", type(exc).__name__)
+                await asyncio.sleep(5)
 
     def publish(self, user_id: UUID, payload: Dict[str, Any]) -> None:
         """Thread-safe: callable from sync route handlers."""

@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 from typing import List, Optional
 from uuid import UUID
 
@@ -49,6 +49,9 @@ from app.services.workspace_files import (
 )
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+
+# Project cards read every project's tech stacks and owner; load them in one batch, not one query per card.
+CARD_LOADS = (selectinload(Project.tech_stacks), joinedload(Project.owner))
 
 
 # ---------------- CREATE PROJECT ----------------
@@ -150,7 +153,7 @@ def list_public_projects(
     - sort_by: newest, oldest, updated, title_asc, or title_desc
     """
 
-    query = db.query(Project).filter(public_project_filter(current_user.id if current_user else None))
+    query = db.query(Project).options(*CARD_LOADS).filter(public_project_filter(current_user.id if current_user else None))
 
     # ---------------- SEARCH ----------------
     if search and search.strip():
@@ -220,7 +223,7 @@ def list_my_projects(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    projects = db.query(Project).filter(
+    projects = db.query(Project).options(*CARD_LOADS).filter(
         Project.owner_id == current_user.id
     ).all()
     stats = project_stats(db, [p.id for p in projects], current_user.id)
@@ -669,8 +672,9 @@ def _detected_names_for_project(project: Project) -> tuple[list[str], list[int]]
     if db is None:
         return [], ids
 
-    rows = db.query(TechStack).filter(TechStack.id.in_(ids)).all()
-    by_id = {int(t.id): t.name for t in rows}
+    by_id = db.info.get("tech_names")
+    if by_id is None:
+        by_id = db.info["tech_names"] = {int(t.id): t.name for t in db.query(TechStack.id, TechStack.name)}
     names = [by_id[i] for i in ids if i in by_id]
     return names, [i for i in ids if i in by_id]
 

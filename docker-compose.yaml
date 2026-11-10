@@ -69,6 +69,8 @@ services:
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-devzgo}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-devzgo-secret}
+      # Shared Redis so messages and notifications arrive live between everyone's local APIs
+      REDIS_URL: ${REDIS_URL:-}
     volumes:
       # Persist covers, videos, and extracted workspaces across rebuilds
       - backend_storage:/app/storage
