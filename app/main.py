@@ -23,10 +23,8 @@ from fastapi.staticfiles import StaticFiles
 # Importing CORSMiddleware to handle Cross-Origin Resource Sharing, allowing the frontend to communicate with the backend
 from fastapi.middleware.cors import CORSMiddleware
 
-# Importing the database base and engine to ensure that the database tables are created when the application starts
 from app.core.errors import ApiError, api_error_handler
-from app.db.base import Base
-from app.db.session import engine
+from app.db import base as _models  # noqa: F401  registers every model before the routes use them
 from app.routes.auth import router as auth_router
 from app.routes.projects import router as projects_router
 from app.routes.project_comments import router as project_comments_router
@@ -100,8 +98,7 @@ else:
         app.mount(f"/storage/{kind}", StaticFiles(directory=str(storage.ROOT / kind)), name=f"storage_{kind}")
 app.include_router(media_router)
 
-# Create the database tables based on the models defined in the Base metadata.
-Base.metadata.create_all(bind=engine)
+# The schema comes only from Alembic migrations (app/scripts/bootstrap_db.py runs them at container start).
 
 app.add_exception_handler(ApiError, api_error_handler)
 app.include_router(auth_router)

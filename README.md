@@ -1,6 +1,8 @@
 # devzgo-backend
 This is used for the backend of DevZ-Go
 
+**New to the team?** Follow [TEAM_SETUP.md](TEAM_SETUP.md) to run the API and website against the shared cloud database and storage.
+
 ## Run with Docker
 
 ```bash
