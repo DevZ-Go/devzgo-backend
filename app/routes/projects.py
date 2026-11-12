@@ -20,6 +20,7 @@ from app.schemas.project import (
     ProjectLikeResponse,
     ProjectResponse,
 )
+from app.schemas.network import CollaborationRequestCreate
 from app.core.dependencies import get_current_user, get_current_user_optional, require_developer
 from app.models.user import User
 from app.models.project_like import ProjectLike
@@ -718,3 +719,37 @@ def build_project_response(
         access=access,
         **(stats or {}),
     )
+
+
+# ---------------- COLLABORATION ROUTE ALIASES ----------------
+@router.get("/{project_id}/collaborators")
+def get_project_collaborators_alias(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    me: Optional[User] = Depends(get_current_user_optional),
+):
+    from app.routes.collaborations import get_project_collaborators
+    return get_project_collaborators(project_id, db, me)
+
+
+@router.get("/{project_id}/collaborations")
+@router.get("/{project_id}/requests")
+def get_project_collaborations_alias(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    me: User = Depends(get_current_user),
+):
+    from app.routes.collaborations import get_project_collaboration_requests
+    return get_project_collaboration_requests(project_id, db, me)
+
+
+@router.post("/{project_id}/collaborations")
+@router.post("/{project_id}/requests")
+def submit_project_collaboration_alias(
+    project_id: UUID,
+    data: "CollaborationRequestCreate",
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    from app.routes.collaborations import submit_collaboration_request
+    return submit_collaboration_request(project_id, data, db, me)

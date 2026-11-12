@@ -543,14 +543,21 @@ def set_sharing(submission_id: UUID, data: SharingIn, db: Session = Depends(get_
 
 
 @router.get("/profiles/{user_id}/assessments", response_model=List[SharedAssessment])
-def shared_assessments(user_id: UUID, db: Session = Depends(get_db),
+def shared_assessments(user_id: str, db: Session = Depends(get_db),
                        current_user: Optional[User] = Depends(get_current_user_optional)):
     """Reviewed challenges this developer chose to show, visible to whoever may see their profile."""
+    try:
+        uid = UUID(user_id)
+    except (ValueError, AttributeError):
+        u = db.query(User).filter(User.username.ilike(user_id)).first()
+        if not u:
+            return []
+        uid = u.id
     viewer_id = current_user.id if current_user else None
-    if not profile_open_to(db, user_id, viewer_id):
+    if not profile_open_to(db, uid, viewer_id):
         return []
     rows = (db.query(ChallengeSubmission).join(ChallengeReview)
-            .filter(ChallengeSubmission.developer_id == user_id, ChallengeSubmission.share_ratings.is_(True),
+            .filter(ChallengeSubmission.developer_id == uid, ChallengeSubmission.share_ratings.is_(True),
                     ChallengeReview.status == "released")
             .order_by(ChallengeReview.released_at.desc()).all())
     out = []
