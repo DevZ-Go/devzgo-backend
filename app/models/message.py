@@ -19,8 +19,13 @@ def chat_extras() -> bool:
         return _EXTRAS
     try:
         from sqlalchemy import inspect
-        from app.db.session import engine
+        from sqlalchemy.engine import make_url
+        from app.db.session import DATABASE_URL, engine
 
+        # Tests wipe the schema and rebuild to head after this import, so the model must match the migrations.
+        if (make_url(DATABASE_URL).database or "").endswith("_test"):
+            _EXTRAS = True
+            return _EXTRAS
         info = inspect(engine)
         if not info.has_table("messages"):
             _EXTRAS = True
