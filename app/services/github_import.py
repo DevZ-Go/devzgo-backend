@@ -39,7 +39,9 @@ STATE_PURPOSE = "github_import"
 def import_callback_url() -> str:
     # An OAuth App only accepts its registered callback URL, so import shares the sign-in callback
     # and is told apart by the purpose inside the signed state.
-    return os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/") + "/auth/github/callback"
+    from app.core.public_urls import backend_base
+
+    return backend_base() + "/auth/github/callback"
 
 
 def configured() -> bool:

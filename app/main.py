@@ -75,6 +75,9 @@ def _cors_origins() -> list[str]:
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:8000",
+        "https://www.devzgo.com",
+        "https://devzgo.com",
+        "https://devzgo-frontend.pages.dev",
     ]
     extra: list[str] = []
     frontend = (os.getenv("FRONTEND_URL") or "").rstrip("/")

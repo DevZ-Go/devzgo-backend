@@ -2,7 +2,6 @@ import hashlib
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from html import escape
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.security import OAuth2PasswordRequestForm
@@ -20,10 +19,12 @@ from app.models.profile import UserProfile
 from app.services.roles import ROLES, account_type_for, assign_identity
 from app.models.password_reset import PasswordResetToken
 from app.core.policy import normalize_username, username_problem
+from app.core.public_urls import frontend_base
 from app.core.security import hash_password, verify_password, issue_token
 from app.core.dependencies import get_current_user, get_current_user_optional
 from app.services import account_lifecycle
 from app.services.email import send_email
+from app.services.password_reset_email import password_reset_html
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -181,12 +182,8 @@ def forgot_password(data: ForgotPasswordRequest, background: BackgroundTasks, db
     db.add(PasswordResetToken(user_id=user.id, token_hash=_sha256(token), expires_at=now + RESET_TTL))
     db.commit()
 
-    link = f"{os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/')}/reset-password?token={token}"
-    html = (
-        f"<p>Hi {escape(user.username)},</p><p>Reset your DevZ-Go password with the link below. "
-        f"It expires in 30 minutes and works once.</p><p><a href=\"{link}\">Reset password</a></p>"
-        "<p>If you did not ask for this, you can ignore this email.</p>"
-    )
+    link = f"{frontend_base()}/reset-password?token={token}"
+    html = password_reset_html(user.username, link)
     # Sent after the response so response time does not reveal whether the account exists.
     # Never put the reset token in logs (dev_note is printed when SMTP/Resend is unset).
     background.add_task(

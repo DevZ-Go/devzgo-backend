@@ -31,7 +31,9 @@ def configured() -> bool:
 
 
 def callback_url() -> str:
-    return os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/") + "/github/app/callback"
+    from app.core.public_urls import backend_base
+
+    return backend_base() + "/github/app/callback"
 
 
 def authorize_url(state: str) -> str:

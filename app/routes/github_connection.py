@@ -1,6 +1,5 @@
 """Connect and disconnect the GitHub App used for editing. Separate from sign-in and from import."""
 
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -12,6 +11,7 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, require_developer
+from app.core.public_urls import frontend_base
 from app.core.rate_limit import rate_limit
 from app.core.security import ALGORITHM, SECRET_KEY
 from app.db.session import get_db
@@ -26,7 +26,7 @@ COOKIE = "gh_app_state"
 
 
 def _front(query: str) -> str:
-    return os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/") + "/settings?section=github&" + query
+    return frontend_base() + "/settings?section=github&" + query
 
 
 def _audit(db: Session, user: User, action: str, outcome: str, error: str | None = None) -> None:

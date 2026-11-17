@@ -22,6 +22,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.policy import username_problem
+from app.core.public_urls import backend_base, frontend_base
 from app.core.security import ALGORITHM, SECRET_KEY, issue_token
 from app.db.session import get_db
 from app.models.profile import UserProfile
@@ -40,11 +41,11 @@ ONBOARDING_TTL = timedelta(minutes=15)
 
 
 def _frontend(path: str) -> str:
-    return os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/") + path
+    return frontend_base() + path
 
 
 def _callback_url() -> str:
-    return os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/") + "/auth/github/callback"
+    return backend_base() + "/auth/github/callback"
 
 
 def _fail(reason: str) -> RedirectResponse:

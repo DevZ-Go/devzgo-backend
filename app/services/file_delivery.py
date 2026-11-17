@@ -63,7 +63,9 @@ def read_stream_token(token: str) -> dict:
 
 
 def stream_url(project_id: UUID, path: str, token: str, download: bool = False) -> str:
-    base = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+    from app.core.public_urls import backend_base
+
+    base = backend_base()
     flag = "&download=1" if download else ""
     return f"{base}/projects/{project_id}/files/stream?path={quote(path)}{flag}&token={token}"
 
