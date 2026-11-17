@@ -68,19 +68,41 @@ app = FastAPI(
 # CORS must run early so browser preflight (OPTIONS) on JSON POSTs — e.g. /auth/register —
 # gets Access-Control-* headers. Login uses form-urlencoded and often skips preflight, which
 # is why register can fail while login appears to work.
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://127.0.0.1:8000"
-]
+def _cors_origins() -> list[str]:
+    defaults = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000",
+    ]
+    extra: list[str] = []
+    frontend = (os.getenv("FRONTEND_URL") or "").rstrip("/")
+    if frontend:
+        extra.append(frontend)
+    # Comma-separated production origins, e.g. https://app.example.com,https://www.example.com
+    for part in (os.getenv("CORS_ORIGINS") or "").split(","):
+        origin = part.strip().rstrip("/")
+        if origin:
+            extra.append(origin)
+    # Preserve order, drop duplicates.
+    seen: set[str] = set()
+    out: list[str] = []
+    for origin in defaults + extra:
+        if origin not in seen:
+            seen.add(origin)
+            out.append(origin)
+    return out
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    # Any localhost / 127.0.0.1 port (Vite port changes, teammates, etc.)
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=_cors_origins(),
+    # Local Vite ports, plus *.pages.dev preview URLs when CORS_ORIGIN_REGEX is unset.
+    allow_origin_regex=os.getenv(
+        "CORS_ORIGIN_REGEX",
+        r"https?://(localhost|127\.0\.0\.1)(:\d+)?$|https://.*\.pages\.dev$",
+    ),
     allow_credentials=True,
     # Explicit methods so DELETE is never omitted by proxies or middleware
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
@@ -175,3 +197,20 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 @app.get("/")
 def root():
     return {"message": "DevZGo Backend is running!"}
+
+
+@app.get("/health")
+def health():
+    """Lightweight liveness for Render / load balancers. Does not migrate or seed."""
+    from sqlalchemy import text
+
+    from app.db.session import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SELECT 1"))
+        return {"status": "ok"}
+    except Exception:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=503, content={"status": "degraded"})

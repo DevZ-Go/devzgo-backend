@@ -105,9 +105,9 @@ def _setting(user: User, field: str, default):
 
 
 def may_message(db: Session, sender_id: UUID, recipient: User) -> bool:
-    from app.services.safety import blocked_between
+    from app.services.safety import dm_blocked
 
-    if blocked_between(db, sender_id, recipient.id):
+    if dm_blocked(db, sender_id, recipient.id):
         return False
     if _setting(recipient, "message_policy", "anyone") != "connections":
         return True

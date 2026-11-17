@@ -88,12 +88,17 @@ def _comment_response(c: ActivityComment, viewer_id: Optional[UUID], post_author
     )
 
 
-def _preview(p: Project, stats: dict) -> ProjectPreview:
+def _preview(p: Project, stats: dict, viewer_id: Optional[UUID] = None) -> ProjectPreview:
+    row = dict(stats.get(p.id, {}))
+    hidden = bool(getattr(p, "likes_hidden", False))
+    if hidden and (viewer_id is None or p.owner_id != viewer_id):
+        row["likes_count"] = 0
     return ProjectPreview(
-        **stats.get(p.id, {}), id=p.id, title=p.title, short_description=p.short_description,
+        **row, id=p.id, title=p.title, short_description=p.short_description,
         cover_image_url=p.cover_image_url, tech_stacks=[t.name for t in p.tech_stacks],
         category=str(p.category.value if hasattr(p.category, "value") else p.category), github_url=p.github_url,
         complexity=p.complexity, contribution_info=p.contribution_info, owner_username=p.owner.username if p.owner else None,
+        likes_hidden=hidden,
     )
 
 
@@ -124,7 +129,7 @@ def _format_many(db: Session, acts: List[NetworkActivity], viewer_id: Optional[U
         author_avatar=a.user.profile.avatar_url if a.user.profile else None,
         author_headline=a.user.profile.headline if a.user.profile else None,
         activity_type=a.activity_type, title=a.title, content=a.content, media_url=a.media_url, is_demo=a.is_demo,
-        created_at=a.created_at, project=_preview(a.project, stats) if a.project else None,
+        created_at=a.created_at, project=_preview(a.project, stats, viewer_id) if a.project else None,
         likes_count=likes.get(a.id, 0), is_liked=a.id in liked, comments_count=comments.get(a.id, 0),
         comments=[_comment_response(c, viewer_id, a.user_id) for c in previews[a.id]],
         can_edit=viewer_id == a.user_id and a.activity_type in USER_POST_TYPES,

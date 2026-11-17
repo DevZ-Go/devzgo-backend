@@ -29,6 +29,7 @@ from app.models.user import User
 from app.routes.auth import save_new_user, username_taken
 from app.routes.github_import import import_redirect
 from app.services.github_import import STATE_PURPOSE as IMPORT_PURPOSE
+from app.services import account_lifecycle
 from app.services.roles import account_type_for, assign_identity
 from app.schemas.user import GitHubCompleteRequest
 
@@ -151,6 +152,10 @@ def github_callback(request: Request, code: str = "", state: str = "", error: st
         return _fail("github")
 
     if user:
+        try:
+            user = account_lifecycle.reactivate_on_login(db, user)
+        except HTTPException:
+            return _fail("github_deleted")
         _fill_profile(db, user, gh)
         target = f"/auth/callback#token={issue_token(user)}"
     else:  # first visit: the account is created once the person picks a username

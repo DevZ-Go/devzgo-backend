@@ -105,7 +105,12 @@ def test_project_likes(client, make_user):
     assert client.post(f"/projects/{private_id}/like", headers=fan).status_code == 404
     for _ in range(2):  # liking twice stays at one like
         body = client.post(f"/projects/{public_id}/like", headers=fan).json()
-        assert body == {"project_id": public_id, "likes_count": 1, "is_liked": True}
+        assert body == {
+            "project_id": public_id,
+            "likes_count": 1,
+            "is_liked": True,
+            "likes_hidden": False,
+        }
     detail = client.get(f"/projects/{public_id}", headers=fan).json()
     assert detail["likes_count"] == 1 and detail["is_liked"] is True
     listed = {p["id"]: p for p in client.get("/projects", headers=fan).json()}
@@ -142,8 +147,13 @@ def test_websocket_delivers_message_and_notification(client, make_user):
 def test_password_reset_flow(client, make_user, monkeypatch):
     import app.routes.auth as auth_routes
 
+    # Capture HTML (contains the link). The log note must never include the token.
     sent = []
-    monkeypatch.setattr(auth_routes, "send_email", lambda to, subject, html, note="": sent.append(note))
+    monkeypatch.setattr(
+        auth_routes,
+        "send_email",
+        lambda to, subject, html, note="": sent.append({"html": html, "note": note}),
+    )
     headers, _ = make_user()
     email = client.get("/auth/me", headers=headers).json()["email"]
 
@@ -151,10 +161,11 @@ def test_password_reset_flow(client, make_user, monkeypatch):
     known = client.post("/auth/forgot-password", json={"email": email.upper()})
     assert unknown.status_code == known.status_code == 200 and unknown.json() == known.json()
     assert len(sent) == 1
+    assert "token=" not in sent[0]["note"]
     client.post("/auth/forgot-password", json={"email": email})
     assert len(sent) == 1  # second request inside a minute is ignored
 
-    token = sent[0].split("token=")[1]
+    token = sent[0]["html"].split("token=")[1].split('"')[0]
     assert client.post("/auth/reset-password", json={"token": "x" * 20, "new_password": "NewPassword1!"}).status_code == 400
     assert client.post("/auth/reset-password", json={"token": token, "new_password": "short"}).status_code == 422
     assert client.post("/auth/reset-password", json={"token": token, "new_password": "NewPassword1!"}).status_code == 200

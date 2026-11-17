@@ -266,6 +266,7 @@ class ProjectPreview(BaseModel):
     likes_count: int = 0
     is_liked: bool = False
     comments_count: int = 0
+    likes_hidden: bool = False
 
     class Config:
         from_attributes = True

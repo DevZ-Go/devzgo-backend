@@ -11,8 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.schemas.user import (
-    ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest, UserCreate, UserResponse, UsernameAvailability,
-    UsernameChangeRequest,
+    AccountConfirmRequest, ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest,
+    ScheduleDeleteRequest, UserCreate, UserResponse, UsernameAvailability, UsernameChangeRequest,
 )
 from app.db.session import get_db
 from app.models.user import User
@@ -22,6 +22,7 @@ from app.models.password_reset import PasswordResetToken
 from app.core.policy import normalize_username, username_problem
 from app.core.security import hash_password, verify_password, issue_token
 from app.core.dependencies import get_current_user, get_current_user_optional
+from app.services import account_lifecycle
 from app.services.email import send_email
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -103,6 +104,17 @@ def change_password(data: ChangePasswordRequest, user: User = Depends(get_curren
     return {"message": "Password updated.", "access_token": issue_token(user), "token_type": "bearer"}
 
 
+def _confirm_account_action(user: User, data: AccountConfirmRequest, *, require_username: bool = False) -> None:
+    """Password accounts must prove the password; GitHub-only accounts confirm with their username."""
+    if require_username or not user.password_hash:
+        typed = normalize_username((data.username or "").strip())
+        if not typed or typed.lower() != user.username.lower():
+            raise HTTPException(status_code=400, detail="Type your username to confirm")
+    if user.password_hash:
+        if not data.password or not verify_password(data.password, user.password_hash):
+            raise HTTPException(status_code=400, detail="Password is incorrect")
+
+
 @router.post("/login")
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -115,7 +127,36 @@ def login(
     if not user or not user.password_hash or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email, username or password")
 
+    user = account_lifecycle.reactivate_on_login(db, user)
     return {"access_token": issue_token(user), "token_type": "bearer"}
+
+
+@router.post("/deactivate", response_model=UserResponse)
+def deactivate_account(
+    data: AccountConfirmRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Hide the account until the next successful sign-in. Signs out every session."""
+    _confirm_account_action(user, data)
+    return account_lifecycle.deactivate(db, user)
+
+
+@router.post("/schedule-delete", response_model=UserResponse)
+def schedule_account_delete(
+    data: ScheduleDeleteRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Schedule permanent deletion in 30 days. Signing in before then cancels it."""
+    _confirm_account_action(user, data, require_username=True)
+    return account_lifecycle.schedule_delete(db, user)
+
+
+@router.post("/cancel-delete", response_model=UserResponse)
+def cancel_account_delete(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Clear a pending deletion while still authenticated."""
+    return account_lifecycle.cancel_delete(db, user)
 
 
 @router.post("/forgot-password")
@@ -147,7 +188,14 @@ def forgot_password(data: ForgotPasswordRequest, background: BackgroundTasks, db
         "<p>If you did not ask for this, you can ignore this email.</p>"
     )
     # Sent after the response so response time does not reveal whether the account exists.
-    background.add_task(send_email, user.email, "Reset your DevZ-Go password", html, f"Reset link: {link}")
+    # Never put the reset token in logs (dev_note is printed when SMTP/Resend is unset).
+    background.add_task(
+        send_email,
+        user.email,
+        "Reset your DevZ-Go password",
+        html,
+        "Password reset email skipped (no SMTP_HOST or RESEND_API_KEY).",
+    )
     return reply
 
 

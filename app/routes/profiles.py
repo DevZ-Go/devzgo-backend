@@ -297,8 +297,15 @@ def search_developers(
             )
         )
     found = found.filter(or_(UserProfile.discoverable.is_(None), UserProfile.discoverable.is_(True)))
+    # Paused / pending-delete accounts stay out of search.
+    found = found.filter(User.deactivated_at.is_(None), User.delete_after.is_(None))
     if current_user is not None:
+        from app.services.safety import blocked_any
+
         found = found.filter(User.id != current_user.id)
+        rows = found.limit(limit * 3).all()
+        hidden = blocked_any(db, current_user.id, [u.id for u in rows])
+        return [user_summary(u) for u in rows if u.id not in hidden][:limit]
     return [user_summary(u) for u in found.limit(limit).all()]
 
 
@@ -352,8 +359,10 @@ def get_user_profile(
     user = _resolve_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Developer not found")
-
     viewer_id = current_user.id if current_user else None
+    from app.services.account_lifecycle import is_hidden
+    if is_hidden(user) and viewer_id != user.id:
+        raise HTTPException(status_code=404, detail="Developer not found")
     return _build_profile_response(user, viewer_id, db)
 
 

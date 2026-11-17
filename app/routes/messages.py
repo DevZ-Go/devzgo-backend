@@ -205,9 +205,17 @@ def send_message(
     recipient = db.query(User).options(selectinload(User.profile)).filter(User.id == msg_data.receiver_id).first()
     if not recipient:
         raise HTTPException(status_code=404, detail="Recipient developer not found")
-    if relation(db, current_user.id, recipient.id) == "block":
+    from app.services.account_lifecycle import require_active_recipient
+    require_active_recipient(recipient)
+    mine = relation(db, current_user.id, recipient.id)
+    theirs = relation(db, recipient.id, current_user.id)
+    if mine == "block":
         raise HTTPException(status_code=403, detail="You blocked this person. Unblock them to send a message.")
-    if blocked_between(db, current_user.id, recipient.id):
+    if mine == "restrict":
+        raise HTTPException(status_code=403, detail="You restricted this person. Remove the restrict to message them.")
+    if theirs == "block" or blocked_between(db, current_user.id, recipient.id):
+        raise HTTPException(status_code=403, detail="You can't message this person")
+    if theirs == "restrict":
         raise HTTPException(status_code=403, detail="You can't message this person")
     if not may_message(db, current_user.id, recipient):
         raise HTTPException(status_code=403, detail="This person only accepts messages from connections")

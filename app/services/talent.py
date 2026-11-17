@@ -305,11 +305,20 @@ def talent_board(db: Session, viewer_id: UUID | None, q: TalentQuery, limit: int
     users = db.query(User).options(selectinload(User.profile)).outerjoin(User.profile).filter(
         or_(UserProfile.discoverable.is_(None), UserProfile.discoverable.is_(True)),
         User.account_type != "recruiter",
-    ).all()
+    )
+    if hasattr(User, "deactivated_at"):
+        users = users.filter(User.deactivated_at.is_(None))
+    users = users.all()
+    hidden = set()
+    if viewer_id:
+        from app.services.safety import blocked_any
+        hidden = blocked_any(db, viewer_id, [u.id for u in users])
 
     cards = []
     for user in users:
         if viewer_id and user.id == viewer_id:
+            continue
+        if user.id in hidden:
             continue
         open_profile = profile_open_to(db, user.id, viewer_id)
         profile = user.profile

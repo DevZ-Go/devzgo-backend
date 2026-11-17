@@ -18,11 +18,16 @@ class User(Base):
     token_version = Column(Integer, nullable=False, server_default="0")
     # "developer" or "recruiter"; fixed at sign-up and never changed by profile edits.
     account_type = Column(String(20), nullable=False, default="developer", server_default="developer")
+    # Pause until the next successful sign-in. Scheduled deletion also sets this.
+    deactivated_at = Column(DateTime(timezone=True), nullable=True)
+    # When set, the account is hidden; signing in before this time cancels deletion. After it, the row is purged.
+    delete_after = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         Index("uq_users_github_id", "github_id", unique=True),
         Index("uq_users_username_lower", func.lower(username), unique=True),
+        Index("ix_users_delete_after", "delete_after"),
     )
 
     @property

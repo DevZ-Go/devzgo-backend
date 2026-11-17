@@ -20,6 +20,7 @@ class ProjectCreate(BaseModel):
     cover_image_url: Optional[str] = None
     demo_video_url: Optional[str] = None
     comments_enabled: Optional[bool] = None  # omitted on update = unchanged
+    likes_hidden: Optional[bool] = None  # omitted on update = unchanged
     live_url: Optional[str] = None  # omitted on update = unchanged; "" clears
     impact_note: Optional[str] = Field(default=None, max_length=1000)  # omitted on update = unchanged; "" clears
 
@@ -147,6 +148,7 @@ class ProjectResponse(BaseModel):
     is_liked: bool = False
     comments_count: int = 0
     comments_enabled: bool = True
+    likes_hidden: bool = False
     access: Optional[Dict[str, bool]] = None  # owner, member, view, edit, files, secrets, comment, manage_team for this viewer
 
     class Config:
@@ -156,6 +158,7 @@ class ProjectLikeResponse(BaseModel):
     project_id: UUID
     likes_count: int
     is_liked: bool
+    likes_hidden: bool = False
 
 class ProjectCommentCreate(BaseModel):
     body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]

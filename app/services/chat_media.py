@@ -142,6 +142,11 @@ def store_upload(user_id: UUID, upload: UploadFile) -> tuple[str, str]:
         "mp4": ("video", _VIDEO_MAX, lambda raw: len(raw) >= 12 and raw[4:8] == b"ftyp", "video/mp4"),
         "webm": ("video", _VIDEO_MAX, lambda raw: raw.startswith(b"\x1a\x45\xdf\xa3"), "video/webm"),
     }
+    if ext in {"mov", "qt", "avi", "mkv", "m4v"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Use an MP4 or WebM video (phone clips in MOV/HEVC aren't supported yet)",
+        )
     if ext not in checks:
         raise HTTPException(
             status_code=400,
@@ -149,7 +154,21 @@ def store_upload(user_id: UUID, upload: UploadFile) -> tuple[str, str]:
         )
     kind, limit, sniff, expected = checks[ext]
     ctype = (upload.content_type or "").split(";", 1)[0].strip().lower()
-    if ctype != expected:
+    # Browsers often send an empty type or application/octet-stream for camera videos.
+    aliases = {
+        "image/jpg": "image/jpeg",
+        "image/pjpeg": "image/jpeg",
+        "video/x-m4v": "video/mp4",
+        "audio/mp4": "video/mp4",
+    }
+    ctype = aliases.get(ctype, ctype)
+    loose = {"", "application/octet-stream", "binary/octet-stream"}
+    if ctype not in loose and ctype != expected:
+        if kind == "video" or ctype.startswith("video/"):
+            raise HTTPException(
+                status_code=400,
+                detail="Use an MP4 or WebM video (phone clips in MOV/HEVC aren't supported yet)",
+            )
         raise HTTPException(status_code=400, detail="That file type does not match its contents")
     raw = upload.file.read(limit + 1)
     if len(raw) > limit:
