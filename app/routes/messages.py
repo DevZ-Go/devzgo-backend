@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import uuid as uuidlib
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import or_, and_, case, desc, func
 from typing import List, Optional
@@ -10,8 +11,8 @@ from uuid import UUID
 
 from app.db.session import get_db
 from app.models.user import User
-from app.models.message import Message, MessageReaction
-from app.models.chat import ChatMember, ChatRoom, RoomMessage, RoomMessageReaction
+from app.models.message import Message, MessageHide, MessageReaction
+from app.models.chat import ChatMember, ChatRoom, RoomMessage, RoomMessageHide, RoomMessageOpen, RoomMessageReaction
 from app.models.collaboration import ProjectCollaborator
 from app.models.project import Project
 from app.models.safety import ChatMute, UserBlock
@@ -69,21 +70,40 @@ def _sender_profile(user: Optional[User]) -> dict:
     }
 
 
-def _message_response(m: Message, viewer_id: UUID, reactions=None, hide_read: bool = False) -> MessageResponse:
-    """hide_read: the other person restricted the viewer, so the viewer never learns they read it."""
+def _has_table(db: Session, name: str) -> bool:
+    try:
+        return sa_inspect(db.get_bind()).has_table(name)
+    except Exception:
+        return False
+
+
+def _message_response(
+    m: Message, viewer_id: UUID, reactions=None, hide_read: bool = False, *, reveal: bool = False,
+) -> MessageResponse:
+    """hide_read: the other person restricted the viewer, so the viewer never learns they read it.
+
+    A view-once message stays visible to the sender until it is opened. Everyone else
+    gets a sealed note, unless this response is the one-time open.
+    """
     outgoing = m.sender_id == viewer_id
+    unsent = m.unsent_at is not None
+    opened = m.opened_at is not None
+    show_body = not unsent and (not m.view_once or reveal or (outgoing and not opened))
     return MessageResponse(
         id=m.id,
         sender_id=m.sender_id,
         receiver_id=m.receiver_id,
-        content=m.content,
+        content=m.content if show_body else "",
         read=False if (hide_read and outgoing) else m.read,
         created_at=m.created_at,
         is_outgoing=outgoing,
-        media_kind=m.media_kind,
-        media_url=f"/messages/attachments/{m.id}" if m.media_key else None,
-        media_name=m.media_name,
-        reactions=reactions or [],
+        media_kind=None if unsent else m.media_kind,
+        media_url=f"/messages/attachments/{m.id}" if show_body and m.media_key else None,
+        media_name=m.media_name if show_body else None,
+        view_once=bool(m.view_once) and not unsent,
+        opened=opened and not unsent,
+        unsent=unsent,
+        reactions=[] if unsent else (reactions or []),
         **_sender_profile(m.sender),
     )
 
@@ -175,6 +195,9 @@ def get_message_thread(
             )
         )
     )
+    if _has_table(db, "message_hides"):
+        hidden = db.query(MessageHide.message_id).filter(MessageHide.user_id == me)
+        query = query.filter(~Message.id.in_(hidden))
     if before:
         query = query.filter(Message.created_at < before)
     messages = query.order_by(desc(Message.created_at)).limit(limit).all()[::-1]
@@ -226,12 +249,16 @@ def send_message(
         raise HTTPException(status_code=400, detail="Write a message or attach a photo, video or file")
     media_name = clean_name(msg_data.media_name, media_key) if media_kind == "file" else None
 
-    new_msg = Message(
+    fields = dict(
         sender_id=current_user.id, receiver_id=msg_data.receiver_id, content=content,
         media_key=media_key, media_kind=media_kind, media_name=media_name, read=False,
     )
+    from app.models.message import chat_extras
+    if chat_extras():
+        fields["view_once"] = bool(msg_data.view_once)
+    new_msg = Message(**fields)
     db.add(new_msg)
-    snippet = clip(content, media_kind)
+    snippet = "View once" if msg_data.view_once else clip(content, media_kind)
     notify(db, msg_data.receiver_id, current_user, "new_message", str(current_user.id),
            f"New message from {display_name(current_user)}: \"{snippet}\"")
     db.commit()
@@ -301,15 +328,42 @@ def _room_summary(db: Session, room: ChatRoom, me: UUID, muted: Optional[set] = 
         project_id=room.project_id,
         member_count=len(room.members),
         unread_count=unread_count(db, room.id, me, mine.last_read_at if mine else None),
-        last_message=clip(last.content, last.media_kind) if last else None,
+        last_message=_room_preview(last),
         last_at=last.created_at if last else None,
         muted=room.id in (muted if muted is not None else muted_rooms(db, me)),
     )
 
 
-def _room_message(msg: RoomMessage, viewer: UUID, reactions=None) -> RoomMessageResponse:
+def _room_preview(last: Optional[RoomMessage]) -> Optional[str]:
+    if last is None:
+        return None
+    if last.unsent_at is not None:
+        return "Unsent a message"
+    if last.view_once:
+        return "View once"
+    return clip(last.content, last.media_kind)
+
+
+def _room_opened(db: Session, rows: List[RoomMessage], viewer: UUID) -> set:
+    ids = [row.id for row in rows if row.view_once]
+    if not ids:
+        return set()
+    return {
+        row[0]
+        for row in db.query(RoomMessageOpen.message_id).filter(
+            RoomMessageOpen.user_id == viewer, RoomMessageOpen.message_id.in_(ids)
+        )
+    }
+
+
+def _room_message(
+    msg: RoomMessage, viewer: UUID, reactions=None, *, opened: bool = False, reveal: bool = False,
+) -> RoomMessageResponse:
     sender = msg.sender
     profile = sender.profile if sender else None
+    outgoing = msg.sender_id == viewer
+    unsent = msg.unsent_at is not None
+    show_body = not unsent and (not msg.view_once or outgoing or reveal)
     return RoomMessageResponse(
         id=msg.id,
         room_id=msg.room_id,
@@ -317,13 +371,16 @@ def _room_message(msg: RoomMessage, viewer: UUID, reactions=None) -> RoomMessage
         sender_username=sender.username if sender else "developer",
         sender_name=display_name(sender) if sender else "Developer",
         sender_avatar_url=profile.avatar_url if profile else None,
-        content=msg.content,
+        content=msg.content if show_body else "",
         created_at=msg.created_at,
-        is_outgoing=msg.sender_id == viewer,
-        media_kind=msg.media_kind,
-        media_url=f"/messages/groups/{msg.room_id}/attachments/{msg.id}" if msg.media_key else None,
-        media_name=msg.media_name,
-        reactions=reactions or [],
+        is_outgoing=outgoing,
+        media_kind=None if unsent else msg.media_kind,
+        media_url=f"/messages/groups/{msg.room_id}/attachments/{msg.id}" if show_body and msg.media_key else None,
+        media_name=msg.media_name if show_body else None,
+        view_once=bool(msg.view_once) and not unsent,
+        opened=opened and bool(msg.view_once) and not unsent,
+        unsent=unsent,
+        reactions=[] if unsent else (reactions or []),
     )
 
 
@@ -384,6 +441,9 @@ def group_thread(
         .options(selectinload(RoomMessage.sender).selectinload(User.profile))
         .filter(RoomMessage.room_id == room_id)
     )
+    if _has_table(db, "room_message_hides"):
+        hidden = db.query(RoomMessageHide.message_id).filter(RoomMessageHide.user_id == current_user.id)
+        query = query.filter(~RoomMessage.id.in_(hidden))
     if before:
         query = query.filter(RoomMessage.created_at < before)
     rows = query.order_by(desc(RoomMessage.created_at)).limit(limit).all()[::-1]
@@ -393,7 +453,8 @@ def group_thread(
         ).update({"last_read_at": datetime.now(timezone.utc)})
         db.commit()
     reactions = _room_reactions(db, rows, current_user.id)
-    return [_room_message(m, current_user.id, reactions.get(m.id)) for m in rows]
+    opened = _room_opened(db, rows, current_user.id)
+    return [_room_message(m, current_user.id, reactions.get(m.id), opened=m.id in opened) for m in rows]
 
 
 @router.put("/groups/{room_id}/read")
@@ -421,6 +482,7 @@ def send_group_message(
     media_name = clean_name(data.media_name, media_key) if media_kind == "file" else None
     msg = post_room_message(
         db, room, current_user, content, media_key=media_key, media_kind=media_kind, media_name=media_name,
+        view_once=bool(data.view_once),
     )
     db.query(ChatMember).filter(ChatMember.room_id == room.id, ChatMember.user_id == current_user.id).update(
         {"last_read_at": datetime.now(timezone.utc)}
@@ -662,6 +724,119 @@ def _publish_direct_reaction(msg: Message) -> None:
     })
 
 
+def _forget_file(key: Optional[str]) -> None:
+    if not key:
+        return
+    try:
+        storage.delete_prefix(key)
+    except Exception:
+        return
+
+
+def _clear_direct_file(msg: Message) -> None:
+    key = msg.media_key
+    msg.media_key = None
+    msg.media_kind = None
+    msg.media_name = None
+    _forget_file(key)
+
+
+def _publish_direct_update(db: Session, msg: Message) -> None:
+    for viewer, other in ((msg.receiver_id, msg.sender_id), (msg.sender_id, msg.receiver_id)):
+        broadcaster.publish(viewer, {
+            "type": "message.updated",
+            "with_user": str(other),
+            "message": _message_response(msg, viewer).model_dump(mode="json"),
+        })
+
+
+def _publish_room_update(db: Session, room: ChatRoom, msg: RoomMessage) -> None:
+    for member in room.members:
+        queue_event(db, member.user_id, {
+            "type": "message.updated",
+            "room_id": str(room.id),
+            "message_id": str(msg.id),
+        })
+
+
+def _direct_view_window(db: Session, msg: Message, viewer: UUID) -> None:
+    """Attachment bytes for a view-once direct message, only while it is being opened."""
+    if not msg.view_once:
+        return
+    now = datetime.now(timezone.utc)
+    if viewer == msg.sender_id:
+        if msg.opened_at is not None:
+            raise HTTPException(status_code=410, detail="This view-once message was opened")
+        return
+    if msg.opened_at is None:
+        raise HTTPException(status_code=403, detail="Open the view-once message first")
+    opened = msg.opened_at if msg.opened_at.tzinfo else msg.opened_at.replace(tzinfo=timezone.utc)
+    if now - opened > timedelta(minutes=3):
+        _clear_direct_file(msg)
+        db.commit()
+        raise HTTPException(status_code=410, detail="This view-once message was opened")
+
+
+@router.post("/{message_id}/hide")
+def hide_message(message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    msg = _direct_for(db, message_id, current_user.id)
+    if _has_table(db, "message_hides"):
+        exists = db.query(MessageHide).filter(MessageHide.message_id == msg.id, MessageHide.user_id == current_user.id).first()
+        if exists is None:
+            db.add(MessageHide(message_id=msg.id, user_id=current_user.id))
+            db.commit()
+    return {"message": "Deleted for you"}
+
+
+@router.post("/{message_id}/unsend", response_model=MessageResponse)
+def unsend_message(message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    msg = _direct_for(db, message_id, current_user.id)
+    if msg.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the sender can unsend a message")
+    key = msg.media_key
+    payload = _message_response(msg, current_user.id).model_copy(update={
+        "content": "", "media_url": None, "media_kind": None, "media_name": None,
+        "view_once": False, "unsent": True, "reactions": [],
+    })
+    for viewer, other in ((msg.receiver_id, msg.sender_id), (msg.sender_id, msg.receiver_id)):
+        broadcaster.publish(viewer, {
+            "type": "message.updated",
+            "with_user": str(other),
+            "message": payload.model_dump(mode="json"),
+        })
+    db.query(MessageReaction).filter(MessageReaction.message_id == msg.id).delete()
+    db.delete(msg)
+    db.commit()
+    _forget_file(key)
+    return payload
+
+
+@router.post("/{message_id}/open", response_model=MessageResponse)
+def open_view_once(message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    msg = _direct_for(db, message_id, current_user.id)
+    if msg.unsent_at is not None or not msg.view_once:
+        raise HTTPException(status_code=404, detail="That view-once message is gone")
+    if msg.sender_id == current_user.id:
+        return _message_response(msg, current_user.id, reveal=msg.opened_at is None)
+    if msg.opened_at is not None:
+        return _message_response(msg, current_user.id)
+    msg.opened_at = datetime.now(timezone.utc)
+    msg.read = True
+    db.commit()
+    _publish_direct_update(db, msg)
+    return _message_response(msg, current_user.id, reveal=True)
+
+
+@router.post("/{message_id}/consume", response_model=MessageResponse)
+def consume_view_once(message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    msg = _direct_for(db, message_id, current_user.id)
+    if msg.view_once and msg.sender_id != current_user.id and msg.opened_at is not None:
+        _clear_direct_file(msg)
+        db.commit()
+        _publish_direct_update(db, msg)
+    return _message_response(msg, current_user.id)
+
+
 @router.post("/attachments", response_model=AttachmentStored)
 def upload_attachment(
     file: UploadFile = File(...),
@@ -676,8 +851,10 @@ def upload_attachment(
 @router.get("/attachments/{message_id}")
 def direct_attachment(message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     msg = _direct_for(db, message_id, current_user.id)
-    if not msg.media_key:
+    if msg.unsent_at is not None or not msg.media_key:
         raise HTTPException(status_code=404, detail="That file is gone")
+    _direct_view_window(db, msg, current_user.id)
+    db.commit()
     return media_response(msg.media_key, msg.media_name)
 
 
@@ -704,9 +881,95 @@ def group_attachment(
     current_user: User = Depends(get_current_user),
 ):
     msg = _room_for(db, room_id, message_id, current_user.id)
-    if not msg.media_key:
+    if msg.unsent_at is not None or not msg.media_key:
         raise HTTPException(status_code=404, detail="That file is gone")
+    if msg.view_once and msg.sender_id != current_user.id:
+        row = db.query(RoomMessageOpen).filter(
+            RoomMessageOpen.message_id == msg.id, RoomMessageOpen.user_id == current_user.id
+        ).one_or_none()
+        if row is None or row.consumed_at is not None:
+            raise HTTPException(status_code=403, detail="Open the view-once message first")
+        opened = row.opened_at if row.opened_at.tzinfo else row.opened_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - opened > timedelta(minutes=3):
+            raise HTTPException(status_code=410, detail="This view-once message was opened")
     return media_response(msg.media_key, msg.media_name)
+
+
+@router.post("/groups/{room_id}/{message_id}/hide")
+def hide_group_message(
+    room_id: UUID, message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    msg = _room_for(db, room_id, message_id, current_user.id)
+    if _has_table(db, "room_message_hides"):
+        exists = db.query(RoomMessageHide).filter(
+            RoomMessageHide.message_id == msg.id, RoomMessageHide.user_id == current_user.id
+        ).first()
+        if exists is None:
+            db.add(RoomMessageHide(message_id=msg.id, user_id=current_user.id))
+            db.commit()
+    return {"message": "Deleted for you"}
+
+
+@router.post("/groups/{room_id}/{message_id}/unsend", response_model=RoomMessageResponse)
+def unsend_group_message(
+    room_id: UUID, message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    room = room_for_member(db, room_id, current_user.id)
+    msg = _room_for(db, room_id, message_id, current_user.id)
+    if msg.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the sender can unsend a message")
+    key = msg.media_key
+    payload = _room_message(msg, current_user.id).model_copy(update={
+        "content": "", "media_url": None, "media_kind": None, "media_name": None,
+        "view_once": False, "unsent": True, "reactions": [],
+    })
+    for member in room.members:
+        queue_event(db, member.user_id, {
+            "type": "message.updated",
+            "room_id": str(room.id),
+            "message_id": str(msg.id),
+        })
+    db.query(RoomMessageReaction).filter(RoomMessageReaction.message_id == msg.id).delete()
+    db.delete(msg)
+    db.commit()
+    _forget_file(key)
+    return payload
+
+
+@router.post("/groups/{room_id}/{message_id}/open", response_model=RoomMessageResponse)
+def open_group_view_once(
+    room_id: UUID, message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    room = room_for_member(db, room_id, current_user.id)
+    msg = _room_for(db, room_id, message_id, current_user.id)
+    if msg.unsent_at is not None or not msg.view_once:
+        raise HTTPException(status_code=404, detail="That view-once message is gone")
+    if msg.sender_id == current_user.id:
+        return _room_message(msg, current_user.id, reveal=True)
+    row = db.query(RoomMessageOpen).filter(
+        RoomMessageOpen.message_id == msg.id, RoomMessageOpen.user_id == current_user.id
+    ).one_or_none()
+    if row is None:
+        db.add(RoomMessageOpen(message_id=msg.id, user_id=current_user.id))
+        _publish_room_update(db, room, msg)
+        db.commit()
+        return _room_message(msg, current_user.id, reveal=True, opened=True)
+    return _room_message(msg, current_user.id, opened=True)
+
+
+@router.post("/groups/{room_id}/{message_id}/consume", response_model=RoomMessageResponse)
+def consume_group_view_once(
+    room_id: UUID, message_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    room_for_member(db, room_id, current_user.id)
+    msg = _room_for(db, room_id, message_id, current_user.id)
+    row = db.query(RoomMessageOpen).filter(
+        RoomMessageOpen.message_id == msg.id, RoomMessageOpen.user_id == current_user.id
+    ).one_or_none()
+    if row is not None and row.consumed_at is None:
+        row.consumed_at = datetime.now(timezone.utc)
+        db.commit()
+    return _room_message(msg, current_user.id, opened=row is not None)
 
 
 @router.post("/groups/{room_id}/{message_id}/reactions", response_model=RoomMessageResponse)

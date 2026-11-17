@@ -21,7 +21,6 @@ from sqlalchemy.orm import Session
 
 from app.services import storage
 
-ALLOWED_EMOJIS = ("👍", "❤️", "😂", "🎉", "👀", "🔥", "👏", "✅")
 _DOCS = {
     "pdf": "application/pdf",
     "txt": "text/plain",
@@ -34,7 +33,7 @@ _DOCS = {
     "zip": "application/zip",
 }
 _KEY = re.compile(
-    r"^chat/[0-9a-fA-F-]{36}/[0-9a-f]{32}\.(jpg|png|gif|webp|mp4|webm|pdf|txt|md|csv|json|docx|xlsx|pptx|zip)$"
+    r"^chat/[0-9a-fA-F-]{36}/(?:voice-)?[0-9a-f]{32}\.(jpg|png|gif|webp|mp4|webm|m4a|mp3|ogg|pdf|txt|md|csv|json|docx|xlsx|pptx|zip)$"
 )
 _TYPES = {
     "jpg": "image/jpeg",
@@ -43,6 +42,9 @@ _TYPES = {
     "webp": "image/webp",
     "mp4": "video/mp4",
     "webm": "video/webm",
+    "m4a": "audio/mp4",
+    "mp3": "audio/mpeg",
+    "ogg": "audio/ogg",
     **_DOCS,
 }
 _IMAGE_MAX = 8 * 1024 * 1024
@@ -66,7 +68,10 @@ def _is_zip(raw: bytes) -> bool:
 
 
 def kind_for(key: str) -> str:
-    ext = key.rsplit(".", 1)[-1]
+    name = key.rsplit("/", 1)[-1]
+    ext = name.rsplit(".", 1)[-1]
+    if name.startswith("voice-") or ext in {"m4a", "mp3", "ogg"}:
+        return "audio"
     if ext in {"mp4", "webm"}:
         return "video"
     if ext in _DOCS:
@@ -85,16 +90,29 @@ def clean_name(name: Optional[str], key: str) -> str:
 
 
 def normalize_emoji(raw: str) -> str:
+    """One emoji glyph. Plain words are rejected; the picker is not a fixed list."""
     value = (raw or "").strip()
     if value in {"❤", "❤️"}:
         value = "❤️"
-    if value not in ALLOWED_EMOJIS:
-        raise HTTPException(status_code=400, detail="Pick one of the reactions")
+    if (
+        not value
+        or len(value) > 16
+        or any(ch.isalnum() for ch in value)
+        or all(ord(ch) < 128 for ch in value)
+    ):
+        raise HTTPException(status_code=400, detail="Pick an emoji reaction")
     return value
 
 
 def clip(content: Optional[str], kind: Optional[str]) -> str:
     text = (content or "").strip()
+    while text.startswith("⟦voice⟧") or text.startswith("⟦fwd⟧"):
+        marker = "⟦voice⟧" if text.startswith("⟦voice⟧") else "⟦fwd⟧"
+        if marker == "⟦voice⟧":
+            kind = "audio"
+        text = text[len(marker):].lstrip()
+    if not text and kind == "audio":
+        return "Voice note"
     if text:
         return text if len(text) <= 80 else text[:80] + "…"
     if kind == "video":
@@ -147,6 +165,16 @@ def store_upload(user_id: UUID, upload: UploadFile) -> tuple[str, str]:
             status_code=400,
             detail="Use an MP4 or WebM video (phone clips in MOV/HEVC aren't supported yet)",
         )
+    if (upload.content_type or "").startswith("audio/") or (upload.filename or "").lower().startswith("voice"):
+        voice_ext = "m4a" if "mp4" in (upload.content_type or "") or ext in {"m4a", "mp4"} else "webm"
+        raw = upload.file.read(_FILE_MAX + 1)
+        if len(raw) > _FILE_MAX:
+            raise HTTPException(status_code=413, detail="Voice notes must be 15 MB or smaller")
+        if len(raw) < 16:
+            raise HTTPException(status_code=400, detail="That voice note is empty")
+        key = f"chat/{user_id}/voice-{uuid.uuid4().hex}.{voice_ext}"
+        storage.save(key, BytesIO(raw))
+        return key, "audio"
     if ext not in checks:
         raise HTTPException(
             status_code=400,
@@ -199,7 +227,7 @@ def take_media(user_id: UUID, key: Optional[str]) -> tuple[Optional[str], Option
 
 def media_response(key: str, name: Optional[str] = None) -> StreamingResponse:
     ext = key.rsplit(".", 1)[-1] if key else ""
-    media_type = _TYPES.get(ext)
+    media_type = "audio/webm" if key.rsplit("/", 1)[-1].startswith("voice-") and ext == "webm" else _TYPES.get(ext)
     if not media_type or not _KEY.match(key):
         raise HTTPException(status_code=404, detail="That file is gone")
     try:
