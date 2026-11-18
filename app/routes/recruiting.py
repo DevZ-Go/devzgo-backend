@@ -143,7 +143,7 @@ def candidate_view(candidate_id: UUID, db: Session = Depends(get_db), me: User =
         profile=_build_profile_response(user, me.id, db),
         standing=standing_for(db, user, me.id),
         projects=evidence,
-        collaborations=[joined_project(p, m, joined_stats[p.id]) for p, m in joined],
+        collaborations=[joined_project(p, m, joined_stats[p.id], me.id, hide_likes=False) for p, m in joined],
         wraps=[PublishedWrap(**w) for w in _published_wraps(db, user, me.id)],
         shortlists=[Membership(shortlist_id=s.id, shortlist_name=s.name, entry_id=e.id, status=e.status, note=e.note)
                     for e, s in memberships],

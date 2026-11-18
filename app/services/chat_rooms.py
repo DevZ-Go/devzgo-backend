@@ -127,15 +127,21 @@ def post_room_message(
     media_key: Optional[str] = None,
     media_kind: Optional[str] = None,
     media_name: Optional[str] = None,
+    view_once: bool = False,
 ) -> RoomMessage:
-    msg = RoomMessage(
+    from app.models.message import chat_extras
+    fields = dict(
         room_id=room.id, sender_id=sender.id, content=content or "",
         media_key=media_key, media_kind=media_kind, media_name=media_name,
     )
+    if chat_extras():
+        fields["view_once"] = view_once
+    msg = RoomMessage(**fields)
     db.add(msg)
     db.flush()
     db.refresh(msg)
     avatar = sender.profile.avatar_url if sender.profile else None
+    sealed = bool(view_once)
     payload = {
         "type": "message.room",
         "room_id": str(room.id),
@@ -146,10 +152,13 @@ def post_room_message(
             "sender_username": sender.username,
             "sender_name": display_name(sender),
             "sender_avatar_url": avatar,
-            "content": content or "",
+            "content": "" if sealed else (content or ""),
             "media_kind": media_kind,
-            "media_url": f"/messages/groups/{room.id}/attachments/{msg.id}" if media_key else None,
-            "media_name": media_name,
+            "media_url": None if sealed or not media_key else f"/messages/groups/{room.id}/attachments/{msg.id}",
+            "media_name": None if sealed else media_name,
+            "view_once": sealed,
+            "opened": False,
+            "unsent": False,
             "reactions": [],
             "created_at": (msg.created_at or datetime.now(timezone.utc)).isoformat(),
             "is_outgoing": False,

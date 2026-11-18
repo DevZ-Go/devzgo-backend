@@ -65,6 +65,7 @@ def partner_ids(db: Session, me: UUID) -> set:
 
 
 @router.get("", response_model=ConnectionPage)
+@router.get("/", response_model=ConnectionPage)
 def my_connections(search: Optional[str] = Query(None, max_length=100), page: Optional[str] = None,
                    limit: int = Query(20, ge=1, le=50), db: Session = Depends(get_db),
                    me: User = Depends(get_current_user)):
@@ -90,6 +91,7 @@ def my_connections(search: Optional[str] = Query(None, max_length=100), page: Op
 
 
 @router.get("/requests", response_model=ConnectionPage)
+@router.get("/requests/", response_model=ConnectionPage)
 def connection_requests(direction: str = Query("incoming", pattern="^(incoming|outgoing)$"), page: Optional[str] = None,
                         limit: int = Query(20, ge=1, le=50), db: Session = Depends(get_db),
                         me: User = Depends(get_current_user)):
@@ -123,12 +125,23 @@ def connection_state(db: Session, me: UUID, other: UUID) -> tuple[Optional[str],
 
 
 @router.get("/status/{user_id}", response_model=ConnectionStatusResponse)
-def get_connection_status(user_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
-    status, connection_id = connection_state(db, me.id, user_id)
-    return ConnectionStatusResponse(user_id=user_id, status=status, connection_id=connection_id)
+@router.get("/status/{user_id}/", response_model=ConnectionStatusResponse)
+def get_connection_status(user_id: str, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+    try:
+        target_uuid = UUID(user_id)
+    except (ValueError, AttributeError):
+        target = db.query(User).filter(User.username.ilike(user_id)).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found")
+        target_uuid = target.id
+    status, connection_id = connection_state(db, me.id, target_uuid)
+    return ConnectionStatusResponse(user_id=target_uuid, status=status, connection_id=connection_id)
 
 
+@router.post("", response_model=ConnectionResponse, dependencies=[rate_limit("connect", 20, 60)])
+@router.post("/", response_model=ConnectionResponse, dependencies=[rate_limit("connect", 20, 60)])
 @router.post("/request", response_model=ConnectionResponse, dependencies=[rate_limit("connect", 20, 60)])
+@router.post("/request/", response_model=ConnectionResponse, dependencies=[rate_limit("connect", 20, 60)])
 def send_connection_request(data: ConnectionRequestCreate, db: Session = Depends(get_db),
                             me: User = Depends(get_current_user)):
     if data.target_user_id == me.id:
@@ -173,6 +186,7 @@ def _incoming_pending(db: Session, connection_id: UUID, me: User) -> Connection:
 
 
 @router.put("/{connection_id}/accept", response_model=ConnectionResponse)
+@router.post("/{connection_id}/accept", response_model=ConnectionResponse)
 def accept_connection(connection_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     c = _incoming_pending(db, connection_id, me)
     c.status, c.accepted_at = "accepted", datetime.now(timezone.utc)
@@ -183,6 +197,7 @@ def accept_connection(connection_id: UUID, db: Session = Depends(get_db), me: Us
 
 
 @router.put("/{connection_id}/decline")
+@router.post("/{connection_id}/decline")
 def decline_connection(connection_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     c = _incoming_pending(db, connection_id, me)
     c.status = "declined"  # the requester is not told
@@ -191,6 +206,7 @@ def decline_connection(connection_id: UUID, db: Session = Depends(get_db), me: U
 
 
 @router.delete("/{connection_id}")
+@router.post("/{connection_id}/remove")
 def remove_or_withdraw_connection(connection_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     """Requester withdraws a pending request, or either side removes an accepted connection."""
     c = db.query(Connection).filter(Connection.id == connection_id).first()

@@ -30,7 +30,7 @@ def _query(kind: str, q: str, project: Optional[UUID], offset: int, limit: int, 
 
 @router.get("/profiles/{user_id}/activity-log")
 def person_log(
-    user_id: UUID,
+    user_id: str,
     scope: Literal["mine", "team"] = "mine",
     kind: Kind = "all",
     q: str = "",
@@ -42,7 +42,11 @@ def person_log(
     db: Session = Depends(get_db),
     viewer: Optional[User] = Depends(get_current_user_optional),
 ):
-    user = db.query(User).options(selectinload(User.profile)).filter(User.id == user_id).first()
+    try:
+        uid = UUID(user_id)
+        user = db.query(User).options(selectinload(User.profile)).filter(User.id == uid).first()
+    except (ValueError, AttributeError):
+        user = db.query(User).options(selectinload(User.profile)).filter(User.username.ilike(user_id)).first()
     if not user:
         raise HTTPException(status_code=404, detail="Developer not found")
     viewer_id = viewer.id if viewer else None

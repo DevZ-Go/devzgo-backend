@@ -279,23 +279,33 @@ def upload_my_resume(
 
 @router.get("/search", response_model=List[ConnectionUserSummary])
 def search_developers(
-    query: str = Query(..., min_length=1),
+    query: str = Query("", max_length=100),
     limit: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    term = f"%{query.strip()}%"
-    found = db.query(User).options(selectinload(User.profile)).outerjoin(User.profile).filter(
-        or_(
-            User.username.ilike(term),
-            UserProfile.full_name.ilike(term),
-            UserProfile.skills.ilike(term),
-            UserProfile.headline.ilike(term),
+    query_str = (query or "").strip()
+    found = db.query(User).options(selectinload(User.profile)).outerjoin(User.profile)
+    if query_str:
+        term = f"%{query_str}%"
+        found = found.filter(
+            or_(
+                User.username.ilike(term),
+                UserProfile.full_name.ilike(term),
+                UserProfile.skills.ilike(term),
+                UserProfile.headline.ilike(term),
+            )
         )
-    )
     found = found.filter(or_(UserProfile.discoverable.is_(None), UserProfile.discoverable.is_(True)))
+    # Paused / pending-delete accounts stay out of search.
+    found = found.filter(User.deactivated_at.is_(None), User.delete_after.is_(None))
     if current_user is not None:
+        from app.services.safety import blocked_any
+
         found = found.filter(User.id != current_user.id)
+        rows = found.limit(limit * 3).all()
+        hidden = blocked_any(db, current_user.id, [u.id for u in rows])
+        return [user_summary(u) for u in rows if u.id not in hidden][:limit]
     return [user_summary(u) for u in found.limit(limit).all()]
 
 
@@ -329,43 +339,59 @@ def talent(
     return talent_board(db, viewer, filters, limit)
 
 
+def _resolve_user(db: Session, identifier: str) -> Optional[User]:
+    try:
+        uid = UUID(identifier)
+        user = db.query(User).filter(User.id == uid).first()
+        if user:
+            return user
+    except (ValueError, AttributeError):
+        pass
+    return db.query(User).filter(User.username.ilike(identifier)).first()
+
+
 @router.get("/{user_id}", response_model=UserProfileResponse)
 def get_user_profile(
-    user_id: UUID,
+    user_id: str,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
+    user = _resolve_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Developer not found")
-
     viewer_id = current_user.id if current_user else None
+    from app.services.account_lifecycle import is_hidden
+    if is_hidden(user) and viewer_id != user.id:
+        raise HTTPException(status_code=404, detail="Developer not found")
     return _build_profile_response(user, viewer_id, db)
 
 
 @router.get("/{user_id}/collaborations", response_model=List[JoinedProject])
 def get_user_collaborations(
-    user_id: UUID,
+    user_id: str,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """Projects this person joined (accepted memberships only) that the viewer is allowed to see."""
+    user = _resolve_user(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Developer not found")
     viewer_id = current_user.id if current_user else None
-    rows = joined_for(db, user_id, viewer_id)
+    rows = joined_for(db, user.id, viewer_id)
     stats = project_stats(db, [p.id for p, _ in rows], viewer_id)
     return [joined_project(p, membership, stats[p.id]) for p, membership in rows]
 
 
 @router.get("/{user_id}/projects", response_model=List[ProjectResponse])
 def get_user_projects(
-    user_id: UUID,
+    user_id: str,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """Every project this person owns that the viewer may open, including private ones they collaborate on."""
     from app.routes.projects import build_project_response
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = _resolve_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Developer not found")
     viewer_id = current_user.id if current_user else None
@@ -376,25 +402,26 @@ def get_user_projects(
 
 @router.get("/{user_id}/groups", response_model=List[CollabGroup])
 def get_user_groups(
-    user_id: UUID,
+    user_id: str,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """Teams this person leads or has joined, limited to projects the viewer is allowed to see."""
-    if not db.query(User.id).filter(User.id == user_id).first():
+    user = _resolve_user(db, user_id)
+    if not user:
         raise HTTPException(status_code=404, detail="Developer not found")
     viewer_id = current_user.id if current_user else None
-    return groups_for(db, user_id, viewer_id)
+    return groups_for(db, user.id, viewer_id)
 
 
 @router.get("/{user_id}/snapshot", response_model=Standing)
 def get_user_snapshot(
-    user_id: UUID,
+    user_id: str,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """Graphic summary of where this person stands, using only work and activity the viewer may see."""
-    user = db.query(User).filter(User.id == user_id).first()
+    user = _resolve_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Developer not found")
     viewer_id = current_user.id if current_user else None

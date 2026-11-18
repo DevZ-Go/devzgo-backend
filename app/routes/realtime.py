@@ -18,6 +18,9 @@ def _user_id(token) -> str | None:
 
 
 @router.websocket("/ws")
+@router.websocket("/ws/")
+@router.websocket("/api/ws")
+@router.websocket("/api/ws/")
 async def realtime_socket(websocket: WebSocket):
     """Client sends {"token": "<JWT>"} as the first message (keeps the token out of URLs and logs)."""
     await websocket.accept()

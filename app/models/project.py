@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Table, Text, true
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Table, Text, false, true
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
@@ -65,6 +65,8 @@ class Project(Base):
     detected_tech_stack_ids = Column(JSONB, nullable=True)
 
     comments_enabled = Column(Boolean, nullable=False, server_default=true())
+    # Instagram-style: others (and cards) hide the like count; liking still works.
+    likes_hidden = Column(Boolean, nullable=False, server_default=false())
     owner_focus = Column(String(200), nullable=True)  # what the owner says they are working on
 
     live_url = Column(String(500), nullable=True)  # demo or deployment link

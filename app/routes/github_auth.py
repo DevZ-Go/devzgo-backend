@@ -22,6 +22,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.policy import username_problem
+from app.core.public_urls import backend_base, frontend_base
 from app.core.security import ALGORITHM, SECRET_KEY, issue_token
 from app.db.session import get_db
 from app.models.profile import UserProfile
@@ -29,6 +30,7 @@ from app.models.user import User
 from app.routes.auth import save_new_user, username_taken
 from app.routes.github_import import import_redirect
 from app.services.github_import import STATE_PURPOSE as IMPORT_PURPOSE
+from app.services import account_lifecycle
 from app.services.roles import account_type_for, assign_identity
 from app.schemas.user import GitHubCompleteRequest
 
@@ -39,11 +41,11 @@ ONBOARDING_TTL = timedelta(minutes=15)
 
 
 def _frontend(path: str) -> str:
-    return os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/") + path
+    return frontend_base() + path
 
 
 def _callback_url() -> str:
-    return os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/") + "/auth/github/callback"
+    return backend_base() + "/auth/github/callback"
 
 
 def _fail(reason: str) -> RedirectResponse:
@@ -151,6 +153,10 @@ def github_callback(request: Request, code: str = "", state: str = "", error: st
         return _fail("github")
 
     if user:
+        try:
+            user = account_lifecycle.reactivate_on_login(db, user)
+        except HTTPException:
+            return _fail("github_deleted")
         _fill_profile(db, user, gh)
         target = f"/auth/callback#token={issue_token(user)}"
     else:  # first visit: the account is created once the person picks a username

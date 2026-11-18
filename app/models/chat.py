@@ -6,6 +6,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
 from app.db.session import Base
+from app.models.message import chat_extras
 
 
 class ChatRoom(Base):
@@ -50,9 +51,38 @@ class RoomMessage(Base):
     media_kind = Column(String(16), nullable=True)  # image | video | file
     media_name = Column(String(160), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    if chat_extras():
+        view_once = Column(Boolean, nullable=False, default=False, server_default="false")
+        opened_at = Column(DateTime(timezone=True), nullable=True)
+        unsent_at = Column(DateTime(timezone=True), nullable=True)
+    else:
+        view_once = None
+        opened_at = None
+        unsent_at = None
 
     room = relationship("ChatRoom", back_populates="messages")
     sender = relationship("User")
+
+
+class RoomMessageOpen(Base):
+    """A group member has opened a view-once message. Each person gets one look."""
+
+    __tablename__ = "room_message_opens"
+
+    message_id = Column(UUID(as_uuid=True), ForeignKey("room_messages.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    opened_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class RoomMessageHide(Base):
+    """The member removed this group message from their own side."""
+
+    __tablename__ = "room_message_hides"
+
+    message_id = Column(UUID(as_uuid=True), ForeignKey("room_messages.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class RoomMessageReaction(Base):

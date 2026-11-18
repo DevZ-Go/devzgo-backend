@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_developer
+from app.core.public_urls import frontend_base
 from app.core.security import ALGORITHM, SECRET_KEY
 from app.db.session import get_db
 from app.models.enums import ProjectVisibility
@@ -40,7 +41,7 @@ STATE_PURPOSE = gh.STATE_PURPOSE
 
 
 def _frontend(path: str) -> str:
-    return os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/") + path
+    return frontend_base() + path
 
 
 class SessionRequest(BaseModel):

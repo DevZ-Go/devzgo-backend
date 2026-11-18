@@ -61,6 +61,18 @@ class UsernameAvailability(BaseModel):
 class UsernameChangeRequest(BaseModel):
     username: Username
 
+
+class AccountConfirmRequest(BaseModel):
+    """Confirm a destructive account action with the password (when set) or by matching the username."""
+    password: Optional[str] = Field(default=None, max_length=128)
+    username: Optional[str] = Field(default=None, max_length=64)
+
+
+class ScheduleDeleteRequest(AccountConfirmRequest):
+    """Must type the account username to schedule permanent deletion."""
+    username: Username
+
+
 class UserResponse(BaseModel):
     id: UUID
     username: str
@@ -69,6 +81,8 @@ class UserResponse(BaseModel):
     has_password: bool = True
     username_needs_choice: bool = False
     account_type: str = "developer"
+    deactivated_at: Optional[datetime] = None
+    delete_after: Optional[datetime] = None
 
     class Config:
         from_attributes = True

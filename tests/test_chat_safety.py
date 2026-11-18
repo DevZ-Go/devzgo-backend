@@ -35,7 +35,7 @@ def test_block_stops_messages_and_connections_both_ways(client, make_user):
     assert client.post("/connections/request", headers=them, json={"target_user_id": me_id}).status_code in (200, 201)
 
 
-def test_restrict_keeps_chat_but_hides_reads_and_pings(client, make_user):
+def test_restrict_blocks_dms_but_keeps_work_searchable(client, make_user):
     me, me_id = make_user()
     them, them_id = make_user()
     username = client.get("/auth/me", headers=them).json()["username"]
@@ -43,15 +43,17 @@ def test_restrict_keeps_chat_but_hides_reads_and_pings(client, make_user):
     by_name = client.post("/safety/people", headers=me, json={"username": "@" + username, "kind": "restrict"})
     assert by_name.status_code == 200 and by_name.json()["relation"] == "restrict"
 
-    assert client.post("/messages", headers=them, json={"receiver_id": me_id, "content": "hello"}).status_code == 200
-    assert _notes(client, me) == []
-    assert client.get("/messages/unread-count", headers=me).json()["unread_count"] == 0
+    theirs = client.post("/messages", headers=them, json={"receiver_id": me_id, "content": "hello"})
+    assert theirs.status_code == 403
+    mine = client.post("/messages", headers=me, json={"receiver_id": them_id, "content": "hi"})
+    assert mine.status_code == 403 and "restrict" in mine.json()["detail"].lower()
 
-    client.get(f"/messages/conversations/{them_id}", headers=me)
-    their_view = client.get(f"/messages/conversations/{me_id}", headers=them).json()
-    assert their_view[-1]["read"] is False
-    convo = client.get("/messages/conversations", headers=me).json()[0]
-    assert convo["relation"] == "restrict"
+    # Restricted people stay findable; blocked people do not.
+    found = client.get("/profiles/search", headers=me, params={"query": username}).json()
+    assert any(row["id"] == them_id for row in found)
+    client.put(f"/safety/people/{them_id}", headers=me, json={"kind": "block"})
+    blocked_search = client.get("/profiles/search", headers=me, params={"query": username}).json()
+    assert all(row["id"] != them_id for row in blocked_search)
 
 
 def test_mute_silences_a_chat_and_a_group(client, make_user):

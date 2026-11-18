@@ -147,6 +147,16 @@ def _commit(db: Session, code: str, detail: str) -> None:
         raise Conflict(code, detail)
 
 
+@router.get("", response_model=List[CollaborationRequestResponse])
+@router.get("/", response_model=List[CollaborationRequestResponse])
+def my_collaborations_root(db: Session = Depends(get_db), me: User = Depends(get_current_user)):
+    rows = db.query(CollaborationRequest).filter(
+        (CollaborationRequest.project_owner_id == me.id) | (CollaborationRequest.requester_id == me.id),
+        CollaborationRequest.status == "pending"
+    ).order_by(CollaborationRequest.created_at.desc()).all()
+    return [_request_view(r) for r in rows]
+
+
 # ---------------- team and my status ----------------
 @router.get("/projects/{project_id}/collaborators", response_model=List[ProjectCollaboratorResponse])
 def get_project_collaborators(project_id: UUID, db: Session = Depends(get_db),
@@ -236,6 +246,9 @@ def _owners_pending_request(db: Session, request_id: UUID, me: User) -> Collabor
 
 
 @router.put("/requests/{request_id}/accept", response_model=ProjectCollaboratorResponse)
+@router.post("/requests/{request_id}/accept", response_model=ProjectCollaboratorResponse)
+@router.put("/{request_id}/accept", response_model=ProjectCollaboratorResponse)
+@router.post("/{request_id}/accept", response_model=ProjectCollaboratorResponse)
 def accept_collaboration_request(request_id: UUID, data: Optional[AccessUpdate] = Body(None),
                                  db: Session = Depends(get_db), me: User = Depends(require_developer)):
     req = _owners_pending_request(db, request_id, me)
@@ -253,6 +266,9 @@ def accept_collaboration_request(request_id: UUID, data: Optional[AccessUpdate] 
 
 
 @router.put("/requests/{request_id}/decline")
+@router.post("/requests/{request_id}/decline")
+@router.put("/{request_id}/decline")
+@router.post("/{request_id}/decline")
 def decline_collaboration_request(request_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     req = _owners_pending_request(db, request_id, me)
     req.status = "declined"
@@ -262,6 +278,9 @@ def decline_collaboration_request(request_id: UUID, db: Session = Depends(get_db
 
 
 @router.delete("/requests/{request_id}")
+@router.delete("/{request_id}")
+@router.post("/requests/{request_id}/withdraw")
+@router.post("/{request_id}/withdraw")
 def withdraw_collaboration_request(request_id: UUID, db: Session = Depends(get_db), me: User = Depends(get_current_user)):
     req = db.query(CollaborationRequest).filter_by(id=request_id, requester_id=me.id, status="pending").first()
     if not req:

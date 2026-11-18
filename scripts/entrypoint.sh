@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# Docker entrypoint: wait for Postgres, bootstrap schema + seed, then start the API.
+# Docker / Render entrypoint: wait for Postgres, bootstrap schema, then start uvicorn.
 set -euo pipefail
 
-# A localhost URL in .env is meant for non-Docker runs; inside the container Postgres is "db".
+# A localhost URL in .env is meant for non-Docker runs; inside compose Postgres is "db".
+# Neon / Render URLs are left unchanged.
 DATABASE_URL="${DATABASE_URL:-postgresql://devzgo:devzgo@db:5432/devzgo_db}"
 DATABASE_URL="${DATABASE_URL/@localhost:/@db:}"
 export DATABASE_URL="${DATABASE_URL/@127.0.0.1:/@db:}"
+
+# Render injects PORT; local compose defaults to 8000.
+PORT="${PORT:-8000}"
+# Realtime uses an in-process broadcaster unless REDIS_URL is set — keep a single worker
+# (and a single Render instance) so WebSocket fans-out stay correct.
+if [ -z "${REDIS_URL:-}" ]; then
+  WORKERS=1
+else
+  WORKERS="${UVICORN_WORKERS:-${WEB_CONCURRENCY:-1}}"
+fi
 
 echo "[entrypoint] Waiting for database..."
 python - <<'PY'
@@ -29,8 +40,13 @@ print("[entrypoint] Timed out waiting for database.", file=sys.stderr)
 sys.exit(1)
 PY
 
-echo "[entrypoint] Checking the schema (migrates local databases only) and seeding tech stacks..."
+echo "[entrypoint] Checking the schema (migrates local databases only) and optional seed..."
 python -m app.scripts.bootstrap_db
 
-echo "[entrypoint] Starting uvicorn..."
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+echo "[entrypoint] Starting uvicorn on 0.0.0.0:${PORT} (workers=${WORKERS}, no reload)..."
+exec uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port "${PORT}" \
+  --workers "${WORKERS}" \
+  --proxy-headers \
+  --forwarded-allow-ips='*'

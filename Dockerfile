@@ -1,16 +1,13 @@
-From python:3.11
+FROM python:3.11
 
 WORKDIR /app
 
 COPY requirements.txt .
-
-# Here we use Run to run the image
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Here we use COPY to copy the files from the current directory to the /app directory in the container
 COPY . .
+RUN chmod +x scripts/entrypoint.sh && sed -i 's/\r$//' scripts/entrypoint.sh scripts/on_test_db.sh || true
 
-RUN chmod +x scripts/entrypoint.sh
-
-# Entrypoint waits for Postgres, bootstraps schema/seed, then starts uvicorn.
+# Render injects PORT; entrypoint binds 0.0.0.0:$PORT with reload disabled.
+EXPOSE 8000
 CMD ["./scripts/entrypoint.sh"]

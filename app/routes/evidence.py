@@ -22,12 +22,16 @@ router = APIRouter(tags=["Evidence"])
 
 @router.get("/profiles/{user_id}/skill-matrix", response_model=SkillMatrix)
 def get_skill_matrix(
-    user_id: UUID,
+    user_id: str,
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     """Technologies this developer has shown, grouped by category, with the projects and files behind each."""
-    user = db.query(User).options(selectinload(User.profile)).filter(User.id == user_id).first()
+    try:
+        uid = UUID(user_id)
+        user = db.query(User).options(selectinload(User.profile)).filter(User.id == uid).first()
+    except (ValueError, AttributeError):
+        user = db.query(User).options(selectinload(User.profile)).filter(User.username.ilike(user_id)).first()
     if not user or user.is_recruiter:
         raise HTTPException(status_code=404, detail="Developer not found")
     return skill_matrix(db, user, current_user.id if current_user else None)

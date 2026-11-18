@@ -1,8 +1,9 @@
 """Block, restrict and mute, as chosen by each person for themselves.
 
-block:    neither person can message the other or send a connection request; any connection ends.
-restrict: they can still message you, but you are not notified, their chat does not count as unread,
-          and they cannot see when you have read their messages.
+block:    full cut either way — no DMs, no connection requests; any connection ends; hidden from
+          each other's search and network lists. Public work is not shown across the block.
+restrict: no DMs either way while the restrict stands; connection may stay; their profile and
+          projects stay findable in search/Explore; they can still see your public work.
 mute:     a direct chat or group stays, but sends no notifications and leaves the unread badge alone.
 """
 
@@ -33,13 +34,26 @@ def blocked_between(db: Session, a: UUID, b: UUID) -> bool:
     ).first() is not None
 
 
+def dm_blocked(db: Session, a: UUID, b: UUID) -> bool:
+    """True when either person blocked or restricted the other — no DMs either way."""
+    if blocked_between(db, a, b):
+        return True
+    return db.query(UserBlock.blocker_id).filter(
+        UserBlock.kind == "restrict",
+        or_(
+            and_(UserBlock.blocker_id == a, UserBlock.blocked_id == b),
+            and_(UserBlock.blocker_id == b, UserBlock.blocked_id == a),
+        ),
+    ).first() is not None
+
+
 def silenced_by(db: Session, owner: UUID, other: UUID) -> bool:
     """owner has blocked or restricted other, so other's activity should not ping owner."""
     return relation(db, owner, other) is not None
 
 
 def quiet_senders(db: Session, owner: UUID) -> set[UUID]:
-    """People whose direct messages should not ring the badge: restricted, blocked, or muted."""
+    """People whose direct messages should not ring the badge: blocked, restricted, or muted."""
     blocked = {row[0] for row in db.query(UserBlock.blocked_id).filter(UserBlock.blocker_id == owner)}
     muted = {
         row[0] for row in db.query(ChatMute.muted_user_id)

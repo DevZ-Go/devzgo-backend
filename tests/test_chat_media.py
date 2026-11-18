@@ -55,7 +55,8 @@ def test_photo_shows_the_sender_and_stays_private(client, make_user):
     removed = client.post(f"/messages/{body['id']}/reactions", headers=friend, json={"emoji": "👍"}).json()["reactions"]
     assert {row["emoji"]: row["count"] for row in removed}["👍"] == 1
     assert client.post(f"/messages/{body['id']}/reactions", headers=stranger, json={"emoji": "🔥"}).status_code == 404
-    assert client.post(f"/messages/{body['id']}/reactions", headers=friend, json={"emoji": "💀"}).status_code == 400
+    assert client.post(f"/messages/{body['id']}/reactions", headers=friend, json={"emoji": "💀"}).status_code == 200
+    assert client.post(f"/messages/{body['id']}/reactions", headers=friend, json={"emoji": "nope"}).status_code == 400
 
 
 def test_group_video_names_the_sender(client, make_user):
@@ -80,3 +81,54 @@ def test_group_video_names_the_sender(client, make_user):
     assert reacted.json()["reactions"][0]["emoji"] == "🎉"
     listed = client.get("/messages/groups", headers=guest).json()
     assert listed[0]["last_message"] == "Video"
+
+
+def test_unsend_and_view_once(client, make_user):
+    sender, sender_id = make_user()
+    friend, _ = make_user()
+    friend_id = client.get("/auth/me", headers=friend).json()["id"]
+
+    sent = client.post("/messages", headers=sender, json={
+        "receiver_id": friend_id, "content": "secret note", "view_once": True,
+    })
+    assert sent.status_code == 200, sent.text
+    message_id = sent.json()["id"]
+    assert sent.json()["view_once"] is True and sent.json()["content"] == "secret note"
+
+    sealed = client.get(f"/messages/conversations/{sender_id}", headers=friend).json()[-1]
+    assert sealed["content"] == "" and sealed["opened"] is False and sealed["view_once"] is True
+
+    opened = client.post(f"/messages/{message_id}/open", headers=friend)
+    assert opened.status_code == 200
+    assert opened.json()["content"] == "secret note"
+    assert client.post(f"/messages/{message_id}/open", headers=friend).json()["content"] == ""
+    assert client.post(f"/messages/{message_id}/consume", headers=friend).json()["opened"] is True
+    assert client.get(f"/messages/conversations/{friend_id}", headers=sender).json()[-1]["content"] == ""
+
+    assert client.post(f"/messages/{message_id}/hide", headers=sender).status_code == 200
+    sender_thread = client.get(f"/messages/conversations/{friend_id}", headers=sender).json()
+    friend_thread = client.get(f"/messages/conversations/{sender_id}", headers=friend).json()
+    assert all(row["id"] != message_id for row in sender_thread)
+    assert any(row["id"] == message_id for row in friend_thread)
+
+    plain = client.post("/messages", headers=sender, json={"receiver_id": friend_id, "content": "hello"})
+    assert client.post(f"/messages/{plain.json()['id']}/unsend", headers=friend).status_code == 403
+    gone = client.post(f"/messages/{plain.json()['id']}/unsend", headers=sender)
+    assert gone.status_code == 200
+    assert gone.json()["unsent"] is True and gone.json()["content"] == ""
+    plain_id = plain.json()["id"]
+    assert all(row["id"] != plain_id for row in client.get(f"/messages/conversations/{sender_id}", headers=friend).json())
+    assert all(row["id"] != plain_id for row in client.get(f"/messages/conversations/{friend_id}", headers=sender).json())
+
+    photo = _upload(client, sender, "shot.png", PNG, "image/png")
+    assert photo.status_code == 200, photo.text
+    sent_photo = client.post("/messages", headers=sender, json={
+        "receiver_id": friend_id, "content": "", "media_key": photo.json()["media_key"],
+    })
+    assert sent_photo.status_code == 200, sent_photo.text
+    photo_id = sent_photo.json()["id"]
+    removed = client.post(f"/messages/{photo_id}/unsend", headers=sender)
+    assert removed.status_code == 200
+    assert removed.json()["unsent"] is True and removed.json()["media_url"] is None
+    assert client.get(f"/messages/attachments/{photo_id}", headers=friend).status_code == 404
+    assert all(row["id"] != photo_id for row in client.get(f"/messages/conversations/{sender_id}", headers=friend).json())

@@ -266,6 +266,7 @@ class ProjectPreview(BaseModel):
     likes_count: int = 0
     is_liked: bool = False
     comments_count: int = 0
+    likes_hidden: bool = False
 
     class Config:
         from_attributes = True
@@ -354,6 +355,7 @@ class MessageCreate(BaseModel):
     content: str = Field(default="", max_length=5000)
     media_key: Optional[str] = Field(default=None, max_length=160)
     media_name: Optional[str] = Field(default=None, max_length=255)
+    view_once: bool = False
 
 class MessageResponse(BaseModel):
     id: UUID
@@ -369,6 +371,9 @@ class MessageResponse(BaseModel):
     media_kind: Optional[str] = None
     media_url: Optional[str] = None
     media_name: Optional[str] = None
+    view_once: bool = False
+    opened: bool = False
+    unsent: bool = False
     reactions: List[ReactionSummary] = []
 
     class Config:
@@ -377,12 +382,12 @@ class MessageResponse(BaseModel):
 
 class AttachmentStored(BaseModel):
     media_key: str
-    media_kind: Literal["image", "video", "file"]
+    media_kind: Literal["image", "video", "file", "audio"]
     media_name: Optional[str] = None
 
 
 class ReactionCreate(BaseModel):
-    emoji: str = Field(min_length=1, max_length=8)
+    emoji: str = Field(min_length=1, max_length=16)
 
 class ConversationResponse(BaseModel):
     other_user: ConnectionUserSummary
@@ -446,6 +451,7 @@ class RoomMessageCreate(BaseModel):
     content: str = Field(default="", max_length=5000)
     media_key: Optional[str] = Field(default=None, max_length=160)
     media_name: Optional[str] = Field(default=None, max_length=255)
+    view_once: bool = False
 
 
 class RoomMessageResponse(BaseModel):
@@ -461,6 +467,9 @@ class RoomMessageResponse(BaseModel):
     media_kind: Optional[str] = None
     media_url: Optional[str] = None
     media_name: Optional[str] = None
+    view_once: bool = False
+    opened: bool = False
+    unsent: bool = False
     reactions: List[ReactionSummary] = []
 
 

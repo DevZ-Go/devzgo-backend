@@ -83,6 +83,7 @@ def create_project(
         visibility=project_data.visibility,
         cover_image_url=project_data.cover_image_url,
         comments_enabled=project_data.comments_enabled is not False,
+        likes_hidden=bool(project_data.likes_hidden),
         live_url=project_data.live_url or None,
         impact_note=project_data.impact_note or None,
     )
@@ -489,9 +490,21 @@ def get_project(
 
 
 # ---------------- PROJECT LIKES ----------------
-def _like_response(db: Session, project_id: UUID, is_liked: bool) -> ProjectLikeResponse:
-    count = db.query(ProjectLike).filter(ProjectLike.project_id == project_id).count()
-    return ProjectLikeResponse(project_id=project_id, likes_count=count, is_liked=is_liked)
+def _like_response(
+    db: Session,
+    project: Project,
+    is_liked: bool,
+    viewer_id: UUID | None,
+) -> ProjectLikeResponse:
+    count = db.query(ProjectLike).filter(ProjectLike.project_id == project.id).count()
+    hidden = bool(project.likes_hidden)
+    show_count = (not hidden) or (viewer_id is not None and viewer_id == project.owner_id)
+    return ProjectLikeResponse(
+        project_id=project.id,
+        likes_count=count if show_count else 0,
+        is_liked=is_liked,
+        likes_hidden=hidden,
+    )
 
 
 def _likeable_project(db: Session, project_id: UUID, user: User) -> Project:
@@ -533,7 +546,7 @@ def like_project(
         except IntegrityError:
             # A parallel request already stored this like.
             db.rollback()
-    return _like_response(db, project_id, True)
+    return _like_response(db, project, True, current_user.id)
 
 
 @router.delete("/{project_id}/like", response_model=ProjectLikeResponse)
@@ -542,10 +555,10 @@ def unlike_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _likeable_project(db, project_id, current_user)
+    project = _likeable_project(db, project_id, current_user)
     db.query(ProjectLike).filter_by(project_id=project_id, user_id=current_user.id).delete()
     db.commit()
-    return _like_response(db, project_id, False)
+    return _like_response(db, project, False, current_user.id)
 
 
 # ---------------- UPDATE PROJECT ----------------
@@ -570,7 +583,9 @@ def update_project(
     if not access["edit"]:
         raise HTTPException(status_code=403, detail="Not authorized")
     if not access["owner"]:  # members with edit rights change details, not who can see or comment
-        project_update.visibility, project_update.comments_enabled = project.visibility, None
+        project_update.visibility = project.visibility
+        project_update.comments_enabled = None
+        project_update.likes_hidden = None
 
     project.title = project_update.title
     project.short_description = project_update.short_description
@@ -590,6 +605,8 @@ def update_project(
         project.impact_note = project_update.impact_note or None
     if project_update.comments_enabled is not None:
         project.comments_enabled = project_update.comments_enabled
+    if project_update.likes_hidden is not None:
+        project.likes_hidden = project_update.likes_hidden
 
     # Replace tech stacks on every update (including [] to clear).
     if project_update.tech_stack_ids:
@@ -692,6 +709,9 @@ def build_project_response(
     )
     detected_names, detected_ids = _detected_names_for_project(project)
     languages = project.language_stats or []
+    response_stats = dict(stats or {})
+    if project.likes_hidden and not is_owner:
+        response_stats["likes_count"] = 0
 
     return ProjectResponse(
         id=project.id,
@@ -719,6 +739,7 @@ def build_project_response(
         detected_tech_stacks=detected_names,
         detected_tech_stack_ids=detected_ids,
         comments_enabled=project.comments_enabled,
+        likes_hidden=bool(project.likes_hidden),
         access=access,
-        **(stats or {}),
+        **response_stats,
     )

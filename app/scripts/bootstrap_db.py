@@ -4,7 +4,8 @@ Startup database step for DevZ-Go.
 1. Apply Alembic migrations automatically on local databases (or when MIGRATE_ON_START=true).
    Shared databases (e.g. Neon) are only reported, so schema changes there are applied deliberately:
      alembic upgrade head
-2. Seed the techstacks catalog.
+   Never stamp or reset production.
+2. Seed the techstacks catalog only on local databases, or when SEED_ON_START=true.
 
 Usage:
   python -m app.scripts.bootstrap_db
@@ -76,15 +77,27 @@ def migrate() -> None:
         command.upgrade(cfg, "head")
     else:
         print(f"[bootstrap] WARNING: shared database is at {current or 'no revision'}, code expects {head}. "
-              "Review the pending migrations, then run `alembic upgrade head` (or set MIGRATE_ON_START=true).")
+              "Review the pending migrations, then run `alembic upgrade head` deliberately "
+              "(do not stamp or reset). Set MIGRATE_ON_START=true only for a controlled one-shot.")
+        if os.getenv("FAIL_ON_SCHEMA_MISMATCH", "").lower() == "true":
+            print("[bootstrap] FAIL_ON_SCHEMA_MISMATCH=true — refusing to start.", file=sys.stderr)
+            sys.exit(1)
+
+
+def _should_seed() -> bool:
+    if make_url(DATABASE_URL).host in LOCAL_HOSTS:
+        return os.getenv("SEED_ON_START", "true").lower() != "false"
+    return os.getenv("SEED_ON_START", "").lower() == "true"
 
 
 def bootstrap() -> None:
     print(f"[bootstrap] Database: {database_kind()}")
     migrate()
-    if inspect(engine).has_table("techstacks"):
+    if inspect(engine).has_table("techstacks") and _should_seed():
         print("[bootstrap] Seeding tech stacks...")
         seed()
+    elif inspect(engine).has_table("techstacks"):
+        print("[bootstrap] Skipping tech stack seed (shared DB; set SEED_ON_START=true to run).")
     print("[bootstrap] Done.")
 
 
