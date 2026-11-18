@@ -2,16 +2,16 @@
 
 import secrets
 from datetime import datetime, timedelta, timezone
-
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user, require_developer
-from app.core.public_urls import frontend_base
+from app.core.public_urls import backend_base, frontend_base
 from app.core.rate_limit import rate_limit
 from app.core.security import ALGORITHM, SECRET_KEY
 from app.db.session import get_db
@@ -42,16 +42,60 @@ def connection(db: Session = Depends(get_db), me: User = Depends(get_current_use
 
 @router.post("/authorize", dependencies=[rate_limit("github_connect", 10, 60)])
 def authorize(db: Session = Depends(get_db), me: User = Depends(require_developer)):
+    """Hand back a same-site start link. The browser then opens it directly.
+
+    A cookie set on this JSON response would be third-party (www.devzgo.com calling
+    the API) and Chrome drops SameSite=Lax cookies from that response. The callback
+    would then always fail the nonce check.
+    """
     if not gh.configured() or not crypto.configured():
         raise HTTPException(status_code=503, detail="Editing isn't configured on this server.")
     nonce = secrets.token_urlsafe(24)
-    state = jwt.encode(
-        {"purpose": "github_app", "sub": str(me.id), "nonce": nonce, "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
+    ticket = jwt.encode(
+        {
+            "purpose": "github_app_begin",
+            "sub": str(me.id),
+            "nonce": nonce,
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+        },
         SECRET_KEY, algorithm=ALGORITHM,
     )
-    ready = JSONResponse({"url": gh.authorize_url(state)})
-    ready.set_cookie(COOKIE, nonce, max_age=600, httponly=True, samesite="lax", secure=gh.callback_url().startswith("https://"))
-    return ready
+    return {"url": backend_base() + "/github/connection/begin?" + urlencode({"ticket": ticket})}
+
+
+@router.get("/begin", include_in_schema=False)
+def begin(ticket: str = ""):
+    """Top-level navigation: set the state cookie on this host, then send the person to GitHub."""
+    failed = RedirectResponse(_front("error=1"))
+    try:
+        claims = jwt.decode(ticket, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        return failed
+    if claims.get("purpose") != "github_app_begin" or not claims.get("sub") or not claims.get("nonce"):
+        return failed
+    if not gh.configured() or not crypto.configured():
+        return failed
+    nonce = str(claims["nonce"])
+    state = jwt.encode(
+        {
+            "purpose": "github_app",
+            "sub": str(claims["sub"]),
+            "nonce": nonce,
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+        },
+        SECRET_KEY, algorithm=ALGORITHM,
+    )
+    response = RedirectResponse(gh.authorize_url(state), status_code=302)
+    response.set_cookie(
+        COOKIE,
+        nonce,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=gh.callback_url().startswith("https://"),
+        path="/",
+    )
+    return response
 
 
 @router.get("/callback", include_in_schema=False)
