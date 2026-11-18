@@ -8,7 +8,7 @@ def _post(client, headers, **body):
 def test_post_types_edit_delete_and_moderation(client, make_user):
     me, _ = make_user()
     other, _ = make_user()
-    for kind in ("post", "milestone", "collab_call", "project_update"):
+    for kind in ("post", "spark", "milestone", "collab_call", "project_update"):
         assert _post(client, me, activity_type=kind).status_code == 200
     assert _post(client, me, activity_type="wrap_up_published").status_code == 422
 

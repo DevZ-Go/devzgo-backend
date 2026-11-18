@@ -104,6 +104,11 @@ def normalize_emoji(raw: str) -> str:
     return value
 
 
+_REPLY = re.compile(r"^⟦reply:[^⟧]*⟧[\s\S]*?⟦/reply⟧\s*")
+_CONTACT = re.compile(r"^⟦contact:[^⟧]*⟧\s*")
+_PROJECT = re.compile(r"^⟦project:[^|]*\|([^⟧]*)⟧\s*")
+
+
 def clip(content: Optional[str], kind: Optional[str]) -> str:
     text = (content or "").strip()
     while text.startswith("⟦voice⟧") or text.startswith("⟦fwd⟧"):
@@ -111,6 +116,13 @@ def clip(content: Optional[str], kind: Optional[str]) -> str:
         if marker == "⟦voice⟧":
             kind = "audio"
         text = text[len(marker):].lstrip()
+    text = _REPLY.sub("", text, count=1)
+    text = _CONTACT.sub("", text, count=1)
+    shared = _PROJECT.match(text)
+    if shared:
+        title = (shared.group(1) or "a project").strip() or "a project"
+        rest = text[shared.end():].strip()
+        text = rest or f"Shared {title}"
     if not text and kind == "audio":
         return "Voice note"
     if text:

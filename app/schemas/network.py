@@ -244,7 +244,7 @@ class ActivityLikeResponse(BaseModel):
 class FeedPostCreate(BaseModel):
     title: ShortText = None
     content: str = Field(min_length=1, max_length=5000)
-    activity_type: Literal["post", "milestone", "collab_call", "project_update", "project_share"] = "post"
+    activity_type: Literal["post", "spark", "milestone", "collab_call", "project_update", "project_share"] = "post"
     project_id: Optional[UUID] = None
     media_url: Link = None
 
