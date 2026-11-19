@@ -124,7 +124,15 @@ def github_login():
         {"nonce": nonce, "purpose": "github", "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
         SECRET_KEY, algorithm=ALGORITHM,
     )
-    query = urlencode({"client_id": client_id, "redirect_uri": _callback_url(), "scope": "read:user user:email", "state": state})
+    # prompt=select_account shows GitHub's account picker, so a browser already
+    # signed in as someone else can choose a different GitHub account.
+    query = urlencode({
+        "client_id": client_id,
+        "redirect_uri": _callback_url(),
+        "scope": "read:user user:email",
+        "state": state,
+        "prompt": "select_account",
+    })
     response = RedirectResponse(f"https://github.com/login/oauth/authorize?{query}")
     # The signed state must match this browser's cookie, so a login link cannot be replayed in someone else's browser.
     response.set_cookie(STATE_COOKIE, nonce, max_age=600, httponly=True, samesite="lax",
@@ -140,7 +148,11 @@ def github_callback(request: Request, code: str = "", state: str = "", error: st
         return _fail("github_state")
     if claims.get("purpose") == IMPORT_PURPOSE:
         return import_redirect(code, state, error)
-    if claims.get("purpose") != "github" or claims.get("nonce") != request.cookies.get(STATE_COOKIE) or not code:
+    if claims.get("purpose") != "github" or claims.get("nonce") != request.cookies.get(STATE_COOKIE):
+        return _fail("github_state")
+    if error == "access_denied":
+        return _fail("github_cancelled")
+    if not code:
         return _fail("github_state")
 
     try:
