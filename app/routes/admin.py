@@ -14,6 +14,7 @@ from app.models.profile import UserProfile
 from app.models.user import User
 from app.services.admin_actions import cancel_proposal, cast_vote, preview_action, submit_action
 from app.services.admin_catalog import get_row, groups_payload, list_rows, sql_table
+from app.services.usage import summarize
 from app.services.platform_admin import (
     OWNER_EMAIL,
     TEAM_EMAILS,
@@ -258,6 +259,11 @@ def audit(
             for row in rows
         ],
     }
+
+
+@router.get("/insights")
+def insights(days: int = 30, ctx: AdminContext = Depends(require_admin), db: Session = Depends(get_db)):
+    return summarize(db, days)
 
 
 @router.get("/access")

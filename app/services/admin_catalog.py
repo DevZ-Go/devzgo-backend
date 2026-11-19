@@ -30,6 +30,7 @@ GROUPS: list[tuple[str, str, str]] = [
     ("safety", "Safety", "Blocks, restricts and mutes"),
     ("workspace", "Workspace and GitHub", "GitHub links, drafts, sync jobs and commit history"),
     ("notifications", "Notifications", "In-app notifications"),
+    ("usage", "Usage", "Which pages were opened, and which gallery direction was on screen"),
     ("security", "Security records", "Password resets, admins, approvals and the audit log"),
 ]
 
@@ -77,6 +78,7 @@ TABLES: list[tuple[str, str, str, str]] = [
     ("project_commits", "Commits", "workspace", "Commits captured for a project."),
     ("project_pushes", "Pushes", "workspace", "Push events captured for a project."),
     ("notifications", "Notifications", "notifications", "Notifications already sent inside DevZ-Go."),
+    ("usage_events", "Visits", "usage", "Each time a signed-in person opened a page or switched the gallery direction. What they typed is not stored."),
     ("password_reset_tokens", "Password resets", "security", "Whether a reset link exists. The link itself is hidden."),
     ("platform_admins", "Admins", "security", "Accounts that can open this admin area."),
     ("platform_admin_invites", "Admin invites", "security", "Emails that receive admin access when they sign up."),
