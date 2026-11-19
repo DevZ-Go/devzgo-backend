@@ -14,7 +14,7 @@ from app.models.admin import AdminAuditEvent, AdminInvite, AdminProposal, AdminP
 from app.models.user import User
 
 # Recovery account. This address is an owner whenever it has a user, and that role cannot be taken away.
-OWNER_EMAIL = "idevzgo.ca@gmail.com"
+OWNER_EMAIL = "devzgo.ca@gmail.com"
 # Invited once by the migration. Removing the invite, or removing the admin row, is permanent.
 TEAM_EMAILS = (
     "singhchangaganjeet@gmail.com",

@@ -20,7 +20,7 @@ def test_stranger_cannot_open_admin(client, make_user):
 
 
 def test_owner_team_quorum_and_secrets(client):
-    owner_headers, owner = _register(client, "devzowner", "idevzgo.ca@gmail.com")
+    owner_headers, owner = _register(client, "devzowner", "devzgo.ca@gmail.com")
     assert owner["is_platform_admin"] is True
     assert owner["admin_role"] == "owner"
     assert client.get("/admin/session", headers=owner_headers).json()["role"] == "owner"
@@ -54,7 +54,7 @@ def test_owner_team_quorum_and_secrets(client):
     assert listed.status_code == 200, listed.text
     blob = json.dumps(listed.json())
     assert "$2" not in blob
-    owner_row = next(row for row in listed.json()["rows"] if row["email"] == "idevzgo.ca@gmail.com")
+    owner_row = next(row for row in listed.json()["rows"] if row["email"] == "devzgo.ca@gmail.com")
     assert owner_row["password_hash"] == {"redacted": True, "present": True}
 
     preview = client.post("/admin/actions/preview", headers=second_headers, json={
