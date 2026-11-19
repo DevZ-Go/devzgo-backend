@@ -20,7 +20,7 @@ High-priority paths (OTP, password reset) also call `try_send_now` so delivery w
 
 | Variable | Purpose |
 | --- | --- |
-| `REQUIRE_EMAIL_VERIFICATION` | Pending registration + OTP before a `users` row exists. Default off. |
+| `REQUIRE_EMAIL_VERIFICATION` | Pending registration + OTP before a `users` row exists. Explicit true/false wins; if unset, required when `FRONTEND_URL` is not localhost. |
 | `EMAIL_OTP_PEPPER` | HMAC pepper for OTP hashes (else `SECRET_KEY`). |
 | `RESEND_WEBHOOK_SECRET` | Required for `POST /webhooks/resend` signature checks. |
 

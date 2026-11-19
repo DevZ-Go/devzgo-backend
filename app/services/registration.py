@@ -216,8 +216,9 @@ def verify_pending_otp(db: Session, pending_id: UUID, code: str) -> dict:
         )
         db.commit()
     pending.consumed_at = now
+    welcome_row = None
     if user.welcome_email_sent_at is None:
-        email_service.enqueue(
+        welcome_row = email_service.enqueue(
             db,
             event_type="welcome",
             template="welcome",
@@ -228,4 +229,5 @@ def verify_pending_otp(db: Session, pending_id: UUID, code: str) -> dict:
         )
         user.welcome_email_sent_at = now
     db.commit()
+    email_service.try_send_now(db, welcome_row)
     return {"ok": True, "username": user.username, "email": user.email}

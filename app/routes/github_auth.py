@@ -239,7 +239,7 @@ def github_complete(data: GitHubCompleteRequest, db: Session = Depends(get_db)):
         assign_identity(user, profile, data.role, data.company, company_sent=data.company is not None or data.role == "Recruiter", role_sent=data.role is not None)
         db.commit()
     if created and user.welcome_email_sent_at is None:
-        email_service.enqueue(
+        row = email_service.enqueue(
             db,
             event_type="welcome",
             template="welcome",
@@ -250,4 +250,5 @@ def github_complete(data: GitHubCompleteRequest, db: Session = Depends(get_db)):
         )
         user.welcome_email_sent_at = datetime.now(timezone.utc)
         db.commit()
+        email_service.try_send_now(db, row)
     return {"access_token": issue_token(user), "token_type": "bearer"}

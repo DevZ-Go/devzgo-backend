@@ -109,7 +109,7 @@ def register(user_data: UserCreate, request: Request, db: Session = Depends(get_
         user.profile = profile
         db.commit()
     if user.welcome_email_sent_at is None:
-        email_service.enqueue(
+        row = email_service.enqueue(
             db,
             event_type="welcome",
             template="welcome",
@@ -121,8 +121,9 @@ def register(user_data: UserCreate, request: Request, db: Session = Depends(get_
         from datetime import datetime, timezone as tz
         user.welcome_email_sent_at = datetime.now(tz.utc)
         db.commit()
+        email_service.try_send_now(db, row)
         db.refresh(user)
-    return user
+    return UserResponse.model_validate(user)
 
 
 @router.post("/verify-email", dependencies=[rate_limit("verify_email", 20, 60)])
