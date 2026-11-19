@@ -52,7 +52,7 @@ def projects_for(db: Session, subject_id: UUID, viewer_id: UUID | None) -> list[
     """Every project this person owns that the viewer is allowed to open."""
     return (
         db.query(Project)
-        .options(selectinload(Project.tech_stacks), selectinload(Project.owner))
+        .options(selectinload(Project.tech_stacks), selectinload(Project.owner).selectinload(User.profile))
         .filter(Project.owner_id == subject_id, visible_project_filter(viewer_id))
         .order_by(Project.updated_at.desc())
         .all()

@@ -139,6 +139,7 @@ class ProjectResponse(BaseModel):
     updated_at: datetime
 
     owner_username: str
+    owner_avatar_url: Optional[str] = None
     tech_stacks: List[str] = []
     tech_stack_ids: List[int] = []
     languages: List[LanguageStat] = []

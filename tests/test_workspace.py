@@ -219,6 +219,7 @@ def test_editing_stays_disabled_until_the_app_is_configured(client, make_user, m
     begin = client.get("/github/connection/begin", params={"ticket": ticket}, follow_redirects=False)
     assert begin.status_code == 302
     assert begin.headers["location"].startswith("https://github.com/login/oauth/authorize")
+    assert "prompt=select_account" in begin.headers["location"]
     assert "redirect_uri=" in begin.headers["location"]
     assert begin.cookies.get("gh_app_state")
     assert client.get("/github/connection/begin", params={"ticket": "nope"}, follow_redirects=False).status_code == 307

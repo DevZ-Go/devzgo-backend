@@ -51,7 +51,10 @@ from app.services.workspace_files import (
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
 # Project cards read every project's tech stacks and owner; load them in one batch, not one query per card.
-CARD_LOADS = (selectinload(Project.tech_stacks), joinedload(Project.owner))
+CARD_LOADS = (
+    selectinload(Project.tech_stacks),
+    joinedload(Project.owner).joinedload(User.profile),
+)
 
 
 # ---------------- CREATE PROJECT ----------------
@@ -733,6 +736,7 @@ def build_project_response(
         created_at=project.created_at,
         updated_at=project.updated_at,
         owner_username=owner_username,
+        owner_avatar_url=project.owner.profile.avatar_url if project.owner and project.owner.profile else None,
         tech_stacks=[tech.name for tech in project.tech_stacks],
         tech_stack_ids=[tech.id for tech in project.tech_stacks],
         languages=languages,
