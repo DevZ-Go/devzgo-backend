@@ -83,8 +83,8 @@ def admin_ids(db: Session) -> list[UUID]:
 def approval_requirement(db: Session, actor: User, target_user_id: UUID | None) -> tuple[int, int]:
     """How many approvals a dangerous change needs, and how many admins are allowed to vote.
 
-    The person a removal is about cannot vote. Three approvals are required when three or more
-    admins can vote, and two when only two can. One admin is not enough.
+    The person a removal is about cannot vote. Two approvals are enough, including the person
+    who starts the request. One admin is not enough.
     """
     eligible = [user_id for user_id in admin_ids(db) if user_id != target_user_id]
     if actor.id not in eligible:
@@ -94,7 +94,7 @@ def approval_requirement(db: Session, actor: User, target_user_id: UUID | None) 
             status_code=400,
             detail="This needs at least two admins. Grant admin access to another person, then ask them to approve it.",
         )
-    return (3 if len(eligible) >= 3 else 2), len(eligible)
+    return 2, len(eligible)
 
 
 def write_audit(

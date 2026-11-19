@@ -32,6 +32,18 @@ from app.services.platform_admin import (
 )
 
 DELETE_GRACE = timedelta(days=30)
+# The owner account can carry these out after the two confirms, without waiting on other admins.
+DELETION_ACTIONS = frozenset({
+    "user.purge",
+    "user.schedule_delete",
+    "project.delete",
+    "challenge.delete",
+    "record.delete",
+})
+
+
+def _owner_runs_deletion(actor: User, action: str) -> bool:
+    return is_owner_email(actor.email) and action in DELETION_ACTIONS
 
 # table, severity, warning, column used as the confirmation text when it is short
 RECORD_DELETE: dict[str, tuple[str, str, str | None]] = {
@@ -127,6 +139,13 @@ def _matches(typed: str | None, preview: Preview) -> bool:
 def _quorum(db: Session, actor: User, preview: Preview, target: UUID | None) -> Preview:
     if preview.severity != "critical" or preview.blocked:
         return preview
+    if _owner_runs_deletion(actor, preview.action):
+        preview.warning += (
+            f" You are signed in as {OWNER_EMAIL}, so this runs as soon as you confirm. "
+            "Other admins do not need to approve it."
+        )
+        preview.target_user_id = None if target is None else str(target)
+        return preview
     try:
         required, eligible = approval_requirement(db, actor, target)
     except HTTPException as exc:
@@ -135,10 +154,7 @@ def _quorum(db: Session, actor: User, preview: Preview, target: UUID | None) -> 
     preview.required_approvals = required
     preview.eligible_admins = eligible
     preview.target_user_id = None if target is None else str(target)
-    if required == 3:
-        preview.warning += " This waits for 3 admin approvals, including yours, before anything changes."
-    else:
-        preview.warning += " This waits for both admins to approve before anything changes."
+    preview.warning += " This waits for 2 admin approvals, including yours, before anything changes."
     return preview
 
 
@@ -906,7 +922,7 @@ def submit_action(db: Session, actor: User, *, action: str, target_id: str | Non
         raise HTTPException(status_code=400, detail="The confirmation text does not match. Nothing was changed.")
     if action == "user.suspend":
         body = {**body, "reason": text}
-    if preview.severity == "critical":
+    if preview.severity == "critical" and not _owner_runs_deletion(actor, action):
         target = UUID(preview.target_user_id) if preview.target_user_id else None
         required, _eligible = approval_requirement(db, actor, target)
         proposal = open_proposal(
@@ -919,7 +935,8 @@ def submit_action(db: Session, actor: User, *, action: str, target_id: str | Non
         return out
     summary = spec.run(db, actor, target_id, body)
     write_audit(
-        db, actor, action=action, summary=summary, severity="important",
+        db, actor, action=action, summary=summary,
+        severity="critical" if preview.severity == "critical" else "important",
         target_type=getattr(spec, "table", None), target_id=target_id, payload={"reason": text},
     )
     db.commit()
