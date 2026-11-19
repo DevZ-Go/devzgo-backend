@@ -3,15 +3,16 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.schemas.user import (
-    AccountConfirmRequest, ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest,
-    ScheduleDeleteRequest, UserCreate, UserResponse, UsernameAvailability, UsernameChangeRequest,
+    AccountConfirmRequest, ChangePasswordRequest, EmailChangeConfirmBody, EmailChangeRequestBody,
+    ForgotPasswordRequest, ResetPasswordRequest, ResendVerificationRequest, ScheduleDeleteRequest,
+    UserCreate, UserResponse, UsernameAvailability, UsernameChangeRequest, VerifyEmailRequest,
 )
 from app.db.session import get_db
 from app.models.user import User
@@ -20,11 +21,12 @@ from app.services.roles import ROLES, account_type_for, assign_identity
 from app.models.password_reset import PasswordResetToken
 from app.core.policy import normalize_username, username_problem
 from app.core.public_urls import frontend_base
+from app.core.rate_limit import rate_limit
 from app.core.security import hash_password, verify_password, issue_token
 from app.core.dependencies import get_current_user, get_current_user_optional
-from app.services import account_lifecycle
-from app.services.email import send_email
-from app.services.password_reset_email import password_reset_html
+from app.services import account_lifecycle, email_service
+from app.services.email_service import require_email_verification
+from app.services import registration as registration_service
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -69,20 +71,33 @@ def username_available(
     return {"username": name, "available": reason is None, "reason": reason}
 
 
-@router.post("/register", response_model=UserResponse)
-def register(user_data: UserCreate, db: Session = Depends(get_db)):
+@router.post("/register", dependencies=[rate_limit("register", 10, 60)])
+def register(user_data: UserCreate, request: Request, db: Session = Depends(get_db)):
     email = user_data.email.strip().lower()
-    if db.query(User.id).filter(func.lower(User.email) == email).first():
-        raise HTTPException(status_code=409, detail="Email already registered")
-    if username_taken(db, user_data.username):
-        raise HTTPException(status_code=409, detail="Username already taken")
     if user_data.role is not None and user_data.role not in ROLES:
         raise HTTPException(status_code=400, detail="Choose one of the listed roles")
     if user_data.role == "Recruiter" and len(" ".join((user_data.company or "").split())) < 2:
         raise HTTPException(status_code=400, detail="Add the company or agency you recruit for")
+
+    if require_email_verification():
+        return registration_service.start_pending_registration(
+            db,
+            email=email,
+            username=user_data.username,
+            password=user_data.password,
+            role=user_data.role,
+            company=user_data.company,
+            request=request,
+        )
+
+    if db.query(User.id).filter(func.lower(User.email) == email).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+    if username_taken(db, user_data.username):
+        raise HTTPException(status_code=409, detail="Username already taken")
     user = save_new_user(db, User(
         username=user_data.username, email=email, password_hash=hash_password(user_data.password),
         account_type=account_type_for(user_data.role),
+        email_verified=True,
     ))
     if user_data.role or user_data.company:
         profile = UserProfile(user_id=user.id)
@@ -93,7 +108,59 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
         )
         user.profile = profile
         db.commit()
+    if user.welcome_email_sent_at is None:
+        email_service.enqueue(
+            db,
+            event_type="welcome",
+            template="welcome",
+            to_email=user.email,
+            context={"username": user.username},
+            idempotency_key=f"welcome:{user.id}",
+            user_id=user.id,
+        )
+        from datetime import datetime, timezone as tz
+        user.welcome_email_sent_at = datetime.now(tz.utc)
+        db.commit()
+        db.refresh(user)
     return user
+
+
+@router.post("/verify-email", dependencies=[rate_limit("verify_email", 20, 60)])
+def verify_email(data: VerifyEmailRequest, db: Session = Depends(get_db)):
+    return registration_service.verify_pending_otp(db, data.pending_id, data.code)
+
+
+@router.post("/resend-verification", dependencies=[rate_limit("resend_verification", 10, 60)])
+def resend_verification(data: ResendVerificationRequest, db: Session = Depends(get_db)):
+    return registration_service.resend_pending_otp(db, data.pending_id)
+
+
+@router.post("/email-change", dependencies=[rate_limit("email_change", 5, 60)])
+def request_email_change(
+    data: EmailChangeRequestBody,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services import email_change as email_change_service
+
+    return email_change_service.start_email_change(db, user, str(data.new_email))
+
+
+@router.post("/email-change/confirm", dependencies=[rate_limit("email_change_confirm", 20, 60)])
+def confirm_email_change(
+    data: EmailChangeConfirmBody,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from app.services import email_change as email_change_service
+
+    updated = email_change_service.confirm_email_change(db, user, data.request_id, data.code)
+    return {
+        "ok": True,
+        "email": updated.email,
+        "access_token": issue_token(updated),
+        "token_type": "bearer",
+    }
 
 
 @router.post("/change-password")
@@ -103,6 +170,15 @@ def change_password(data: ChangePasswordRequest, user: User = Depends(get_curren
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     user.password_hash = hash_password(data.new_password)
     user.token_version = (user.token_version or 0) + 1
+    email_service.enqueue(
+        db,
+        event_type="password_changed",
+        template="password_changed",
+        to_email=user.email,
+        context={"username": user.username},
+        idempotency_key=f"password_changed:{user.id}:{user.token_version}",
+        user_id=user.id,
+    )
     db.commit()
     return {"message": "Password updated.", "access_token": issue_token(user), "token_type": "bearer"}
 
@@ -129,6 +205,8 @@ def login(
 
     if not user or not user.password_hash or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email, username or password")
+    if require_email_verification() and not user.email_verified:
+        raise HTTPException(status_code=403, detail="Verify your email before signing in.")
 
     user = account_lifecycle.reactivate_on_login(db, user)
     return {"access_token": issue_token(user), "token_type": "bearer"}
@@ -162,8 +240,8 @@ def cancel_account_delete(user: User = Depends(get_current_user), db: Session = 
     return account_lifecycle.cancel_delete(db, user)
 
 
-@router.post("/forgot-password")
-def forgot_password(data: ForgotPasswordRequest, background: BackgroundTasks, db: Session = Depends(get_db)):
+@router.post("/forgot-password", dependencies=[rate_limit("forgot_password", 10, 60)])
+def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """Always the same answer, so it cannot be used to find out which emails have accounts."""
     reply = {"message": "If that matches an account, a reset link is on its way to its email address."}
     handle = data.email.strip().lower().lstrip("@")
@@ -182,19 +260,18 @@ def forgot_password(data: ForgotPasswordRequest, background: BackgroundTasks, db
 
     token = secrets.token_urlsafe(32)
     db.add(PasswordResetToken(user_id=user.id, token_hash=_sha256(token), expires_at=now + RESET_TTL))
-    db.commit()
-
     link = f"{frontend_base()}/reset-password?token={token}"
-    html = password_reset_html(user.username, link)
-    # Sent after the response so response time does not reveal whether the account exists.
-    # Never put the reset token in logs (dev_note is printed when SMTP/Resend is unset).
-    background.add_task(
-        send_email,
-        user.email,
-        "Reset your DevZ-Go password",
-        html,
-        "Password reset email skipped (no SMTP_HOST or RESEND_API_KEY).",
+    row = email_service.enqueue(
+        db,
+        event_type="password_reset",
+        template="password_reset",
+        to_email=user.email,
+        context={"username": user.username, "link": link},
+        idempotency_key=f"password_reset:{user.id}:{_sha256(token)[:16]}",
+        user_id=user.id,
     )
+    db.commit()
+    email_service.try_send_now(db, row)
     return reply
 
 
@@ -216,6 +293,15 @@ def reset_password(data: ResetPasswordRequest, db: Session = Depends(get_db)):
     db.query(PasswordResetToken).filter(
         PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)
     ).update({"used_at": now})
+    email_service.enqueue(
+        db,
+        event_type="password_changed",
+        template="password_changed",
+        to_email=user.email,
+        context={"username": user.username},
+        idempotency_key=f"password_changed:{user.id}:{user.token_version}",
+        user_id=user.id,
+    )
     db.commit()
     return {"message": "Password updated. You can sign in now."}
 

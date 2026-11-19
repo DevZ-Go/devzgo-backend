@@ -169,6 +169,9 @@ def send_connection_request(data: ConnectionRequestCreate, db: Session = Depends
         c = Connection(requester_id=me.id, receiver_id=target.id, status="pending")
         db.add(c)
     notify(db, target.id, me, "connection_request", str(me.id), f"{display_name(me)} sent you a connection request.")
+    from app.services.connection_emails import enqueue_connection_request
+
+    enqueue_connection_request(db, requester=me, receiver=target)
     db.commit()
     db.refresh(c)
     return _view(c, me.id)
@@ -191,6 +194,12 @@ def accept_connection(connection_id: UUID, db: Session = Depends(get_db), me: Us
     c = _incoming_pending(db, connection_id, me)
     c.status, c.accepted_at = "accepted", datetime.now(timezone.utc)
     notify(db, c.requester_id, me, "connection_accepted", str(me.id), f"{display_name(me)} accepted your connection request.")
+    from app.services.connection_emails import maybe_milestone
+
+    requester = db.query(User).filter(User.id == c.requester_id).first()
+    if requester:
+        maybe_milestone(db, requester)
+    maybe_milestone(db, me)
     db.commit()
     db.refresh(c)
     return _view(c, me.id)

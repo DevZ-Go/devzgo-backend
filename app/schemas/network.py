@@ -76,6 +76,13 @@ class UserProfileUpdate(UserProfileBase):
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
     notify_challenges: Optional[bool] = None
+    email_notify_connection_requests: Optional[bool] = None
+    email_notify_connection_milestones: Optional[bool] = None
+    email_notify_messages_digest: Optional[bool] = None
+    email_notify_collaborations: Optional[bool] = None
+    email_notify_project_activity: Optional[bool] = None
+    email_notify_recruiter: Optional[bool] = None
+    email_notify_weekly_summary: Optional[bool] = None
     challenge_notices: Optional[Literal["off", "open_to_work", "always"]] = None
     challenge_invites: Optional[Literal["off", "open_to_work", "always"]] = None
     start_page: Optional[Literal["home", "resume"]] = None
@@ -120,6 +127,13 @@ class UserProfileResponse(UserProfileBase):
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
     notify_challenges: Optional[bool] = None
+    email_notify_connection_requests: Optional[bool] = None
+    email_notify_connection_milestones: Optional[bool] = None
+    email_notify_messages_digest: Optional[bool] = None
+    email_notify_collaborations: Optional[bool] = None
+    email_notify_project_activity: Optional[bool] = None
+    email_notify_recruiter: Optional[bool] = None
+    email_notify_weekly_summary: Optional[bool] = None
     challenge_notices: Optional[str] = None
     challenge_invites: Optional[str] = None
     start_page: Optional[str] = None

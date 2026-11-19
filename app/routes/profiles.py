@@ -48,6 +48,9 @@ OWN_SETTINGS = (
     "connection_visibility", "collaboration_policy", "email_visibility", "resume_visibility",
     "notify_likes", "notify_comments", "notify_shares", "notify_connections",
     "notify_messages", "notify_collaborations", "notify_challenges", "challenge_notices", "challenge_invites", "start_page",
+    "email_notify_connection_requests", "email_notify_connection_milestones",
+    "email_notify_messages_digest", "email_notify_collaborations", "email_notify_project_activity",
+    "email_notify_recruiter", "email_notify_weekly_summary",
 )
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])

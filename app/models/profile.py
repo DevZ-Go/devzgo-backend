@@ -60,6 +60,17 @@ class UserProfile(Base):
     # home: signed-in home. resume: the last page this account had open on this browser.
     start_page = Column(String(16), nullable=False, default="home", server_default="home")
 
+    # Optional email notifications (separate from in-app notify_*). Security mail is not toggleable.
+    email_notify_connection_requests = Column(Boolean, nullable=False, default=True, server_default="true")
+    email_notify_connection_milestones = Column(Boolean, nullable=False, default=True, server_default="true")
+    email_notify_messages_digest = Column(Boolean, nullable=False, default=True, server_default="true")
+    email_notify_collaborations = Column(Boolean, nullable=False, default=True, server_default="true")
+    email_notify_project_activity = Column(Boolean, nullable=False, default=True, server_default="true")
+    email_notify_recruiter = Column(Boolean, nullable=False, default=True, server_default="true")
+    email_notify_weekly_summary = Column(Boolean, nullable=False, default=True, server_default="true")
+    connection_milestone_baseline = Column(Integer, nullable=True)
+    connection_milestone_last = Column(Integer, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

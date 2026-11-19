@@ -53,6 +53,7 @@ from app.routes.github_connection import router as github_connection_router
 from app.routes.workspace import router as workspace_router
 from app.routes.admin import router as admin_router
 from app.routes.usage import router as usage_router
+from app.routes.email_hooks import router as email_hooks_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -155,6 +156,7 @@ app.include_router(github_app_callback_router)
 app.include_router(workspace_router)
 app.include_router(admin_router)
 app.include_router(usage_router)
+app.include_router(email_hooks_router)
 
 
 def _sweep_workspace() -> None:

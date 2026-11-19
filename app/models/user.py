@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, Index, Integer
+from sqlalchemy import Boolean, Column, String, DateTime, Index, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -18,6 +18,9 @@ class User(Base):
     token_version = Column(Integer, nullable=False, server_default="0")
     # "developer" or "recruiter"; fixed at sign-up and never changed by profile edits.
     account_type = Column(String(20), nullable=False, default="developer", server_default="developer")
+    # Existing accounts are grandfathered verified; new password signups set this after OTP.
+    email_verified = Column(Boolean, nullable=False, default=True, server_default="true")
+    welcome_email_sent_at = Column(DateTime(timezone=True), nullable=True)
     # Pause until the next successful sign-in. Scheduled deletion also sets this.
     deactivated_at = Column(DateTime(timezone=True), nullable=True)
     # When set, the account is hidden; signing in before this time cancels deletion. After it, the row is purged.

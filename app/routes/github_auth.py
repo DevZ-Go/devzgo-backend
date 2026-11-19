@@ -91,15 +91,13 @@ def suggest_username(db: Session, login: str) -> str:
 
 def _find_user(db: Session, gh: dict) -> User | None:
     user = db.query(User).filter(User.github_id == gh["id"]).first()
-    if not user and gh["email"]:
+    if not user and gh.get("email"):
         # Link only through an email GitHub has verified, so nobody can claim another person's account.
         user = db.query(User).filter(func.lower(User.email) == gh["email"].lower()).first()
         if user and user.github_id:
             raise ValueError("github_linked")  # that account belongs to a different GitHub user
         if user:
             user.github_id = gh["id"]
-    if not user and not gh["email"]:
-        raise ValueError("github_email")
     return user
 
 
@@ -174,7 +172,10 @@ def github_callback(request: Request, code: str = "", state: str = "", error: st
     else:  # first visit: the account is created once the person picks a username
         onboarding = jwt.encode({"purpose": "github_onboarding", "gh": gh, "exp": datetime.now(timezone.utc) + ONBOARDING_TTL},
                                 SECRET_KEY, algorithm=ALGORITHM)
-        target = f"/auth/github/onboarding#{urlencode({'token': onboarding, 'suggested': suggest_username(db, gh['login'])})}"
+        params = {"token": onboarding, "suggested": suggest_username(db, gh["login"])}
+        if not gh.get("email"):
+            params["needs_email"] = "1"
+        target = f"/auth/github/onboarding#{urlencode(params)}"
     response = RedirectResponse(_frontend(target))
     response.delete_cookie(STATE_COOKIE)
     return response
@@ -191,14 +192,43 @@ def github_complete(data: GitHubCompleteRequest, db: Session = Depends(get_db)):
     if data.role == "Recruiter" and len(" ".join((data.company or "").split())) < 2:
         raise HTTPException(status_code=400, detail="Add the company or agency you recruit for")
     gh = claims["gh"]
+    from app.services import email_service, registration as registration_service
+
+    created = False
     user = db.query(User).filter(User.github_id == gh["id"]).first()  # completed already in another tab
     if not user:
+        email = (gh.get("email") or (str(data.email) if data.email else "")).strip().lower()
+        if not email:
+            raise HTTPException(
+                status_code=400,
+                detail="Add the email you want on this account. GitHub did not share a verified address.",
+            )
         if username_taken(db, data.username):
             raise HTTPException(status_code=409, detail="Username already taken")
-        if db.query(User.id).filter(func.lower(User.email) == gh["email"].lower()).first():
+        if db.query(User.id).filter(func.lower(User.email) == email).first():
             raise HTTPException(status_code=409, detail="Email already registered")
-        user = save_new_user(db, User(username=data.username, email=gh["email"].lower(), github_id=gh["id"], password_hash=None,
-                                      account_type=account_type_for(data.role)))
+        # Collected email (not from GitHub) must pass OTP before the account exists.
+        if not gh.get("email"):
+            return registration_service.start_pending_registration(
+                db,
+                email=email,
+                username=data.username,
+                password=None,
+                role=data.role,
+                company=data.company,
+                purpose="github_onboarding",
+                github_id=gh["id"],
+                github_payload=gh,
+            )
+        user = save_new_user(db, User(
+            username=data.username,
+            email=email,
+            github_id=gh["id"],
+            password_hash=None,
+            account_type=account_type_for(data.role),
+            email_verified=True,
+        ))
+        created = True
     _fill_profile(db, user, gh)
     if data.role or data.company:
         db.refresh(user)
@@ -207,5 +237,17 @@ def github_complete(data: GitHubCompleteRequest, db: Session = Depends(get_db)):
             db.add(profile)
             user.profile = profile
         assign_identity(user, profile, data.role, data.company, company_sent=data.company is not None or data.role == "Recruiter", role_sent=data.role is not None)
+        db.commit()
+    if created and user.welcome_email_sent_at is None:
+        email_service.enqueue(
+            db,
+            event_type="welcome",
+            template="welcome",
+            to_email=user.email,
+            context={"username": user.username},
+            idempotency_key=f"welcome:{user.id}",
+            user_id=user.id,
+        )
+        user.welcome_email_sent_at = datetime.now(timezone.utc)
         db.commit()
     return {"access_token": issue_token(user), "token_type": "bearer"}
