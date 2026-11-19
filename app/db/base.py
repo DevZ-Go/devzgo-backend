@@ -22,3 +22,4 @@ from app.models.monthly_wrap import MonthlyWrap
 from app.models.recruiting import RecruitmentRequest, Shortlist, ShortlistEntry
 from app.models.challenge import ChallengeInvitation, ChallengeReview, ChallengeSubmission, TechnicalChallenge
 from app.models.workspace import GitHubConnection, WorkspaceAuditEvent, WorkspaceDraft, WorkspaceSyncJob
+from app.models.admin import AdminAuditEvent, AdminInvite, AdminProposal, AdminProposalVote, PlatformAdmin

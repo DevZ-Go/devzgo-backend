@@ -52,6 +52,8 @@ def save_new_user(db: Session, user: User) -> User:
         db.rollback()
         raise HTTPException(status_code=409, detail="Username or email already taken")
     db.refresh(user)
+    from app.services.platform_admin import claim_reserved_admin
+    claim_reserved_admin(db, user)
     return user
 
 
@@ -233,5 +235,9 @@ def change_username(data: UsernameChangeRequest, user: User = Depends(get_curren
 
 
 @router.get("/me", response_model=UserResponse)
-def get_current_user_info(current_user: User = Depends(get_current_user)):
-    return current_user
+def get_current_user_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.services.platform_admin import claim_reserved_admin
+    role = claim_reserved_admin(db, current_user)
+    return UserResponse.model_validate(current_user).model_copy(
+        update={"is_platform_admin": role is not None, "admin_role": role}
+    )

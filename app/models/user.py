@@ -22,6 +22,9 @@ class User(Base):
     deactivated_at = Column(DateTime(timezone=True), nullable=True)
     # When set, the account is hidden; signing in before this time cancels deletion. After it, the row is purged.
     delete_after = Column(DateTime(timezone=True), nullable=True)
+    # Admin lock. Signing in does not clear it; an admin has to restore the account.
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_reason = Column(String(300), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

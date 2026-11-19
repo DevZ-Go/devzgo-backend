@@ -1,6 +1,6 @@
 """Profile roles and account types.
 
-The account type (developer or recruiter) is fixed at sign-up. The profile role is a label a developer
+The account type (developer or recruiter) is chosen at sign-up, and an admin can change it later. The profile role is a label a developer
 may change; it can never move an account across the developer/recruiter line.
 """
 

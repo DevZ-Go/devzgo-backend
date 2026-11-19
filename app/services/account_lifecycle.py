@@ -41,6 +41,11 @@ def purge_if_due(db: Session, user: User) -> None:
 def reactivate_on_login(db: Session, user: User) -> User:
     """Cancel a pending deletion and clear a pause. Call only after credentials are verified."""
     purge_if_due(db, user)
+    if user.suspended_at is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="This account is suspended. A DevZ-Go admin has to restore it before you can sign in.",
+        )
     if user.deactivated_at is None and user.delete_after is None:
         return user
     user.deactivated_at = None

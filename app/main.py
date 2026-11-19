@@ -51,6 +51,7 @@ from app.routes.file_preview import router as file_preview_router
 from app.routes.github_connection import callback_router as github_app_callback_router
 from app.routes.github_connection import router as github_connection_router
 from app.routes.workspace import router as workspace_router
+from app.routes.admin import router as admin_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -151,6 +152,7 @@ app.include_router(file_preview_router)
 app.include_router(github_connection_router)
 app.include_router(github_app_callback_router)
 app.include_router(workspace_router)
+app.include_router(admin_router)
 
 
 def _sweep_workspace() -> None:

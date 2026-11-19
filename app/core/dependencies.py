@@ -32,7 +32,12 @@ def user_from_token(db: Session, token: str | None) -> User | None:
     if not payload.get("sub") or payload.get("purpose"):  # purpose tokens (OAuth state, onboarding) never log in
         return None
     user = db.query(User).filter(User.id == payload["sub"]).first()
-    return user if user and payload.get("ver", 0) == (user.token_version or 0) else None
+    if not user or payload.get("ver", 0) != (user.token_version or 0):
+        return None
+    # A suspension signs the account out even if a token was issued before the column existed.
+    if user.suspended_at is not None:
+        return None
+    return user
 
 
 def get_current_user(
