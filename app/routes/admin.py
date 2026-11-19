@@ -262,8 +262,13 @@ def audit(
 
 
 @router.get("/insights")
-def insights(days: int = 30, ctx: AdminContext = Depends(require_admin), db: Session = Depends(get_db)):
-    return summarize(db, days)
+def insights(
+    days: int = 30,
+    audience: str = "all",
+    ctx: AdminContext = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return summarize(db, days, audience)
 
 
 @router.get("/access")

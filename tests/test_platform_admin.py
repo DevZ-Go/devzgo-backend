@@ -63,31 +63,36 @@ def test_owner_team_quorum_and_secrets(client):
     assert preview.status_code == 200, preview.text
     assert preview.json()["blocked"]
 
-    proposed = client.post("/admin/actions", headers=owner_headers, json={
+    # The owner can delete without waiting for other admins.
+    purged = client.post("/admin/actions", headers=owner_headers, json={
         "action": "user.purge", "target_id": victim["id"], "payload": {},
         "reason": "Spam account removal", "typed": victim["email"],
+    })
+    assert purged.status_code == 200, purged.text
+    assert purged.json()["status"] == "done"
+    assert client.post("/auth/login", data={"username": victim["email"], "password": "Password1!"}).status_code == 401
+
+    # Another admin still needs a second approval for a deletion.
+    _pending_headers, pending = _register(client, "pendingone", "pendingone@example.com")
+    proposed = client.post("/admin/actions", headers=second_headers, json={
+        "action": "user.purge", "target_id": pending["id"], "payload": {},
+        "reason": "Spam account removal", "typed": pending["email"],
     })
     assert proposed.status_code == 200, proposed.text
     proposal = proposed.json()
     assert proposal["status"] == "pending"
-    assert proposal["required_approvals"] == 3
-    assert client.post("/auth/login", data={"username": victim["email"], "password": "Password1!"}).status_code == 200
-
-    waiting = client.post(f"/admin/proposals/{proposal['proposal_id']}/vote", headers=second_headers, json={
-        "decision": "approve", "typed": "APPROVE", "reason": "I checked this account",
-    })
-    assert waiting.status_code == 200, waiting.text
-    assert waiting.json()["status"] == "pending"
+    assert proposal["required_approvals"] == 2
+    assert client.post("/auth/login", data={"username": pending["email"], "password": "Password1!"}).status_code == 200
 
     finished = client.post(f"/admin/proposals/{proposal['proposal_id']}/vote", headers=third_headers, json={
         "decision": "approve", "typed": "APPROVE", "reason": "Agreed after review",
     })
     assert finished.status_code == 200, finished.text
     assert finished.json()["status"] == "executed"
-    assert client.post("/auth/login", data={"username": victim["email"], "password": "Password1!"}).status_code == 401
+    assert client.post("/auth/login", data={"username": pending["email"], "password": "Password1!"}).status_code == 401
 
     _kept_headers, kept = _register(client, "keeptwo", "keeptwo@example.com")
-    opened = client.post("/admin/actions", headers=owner_headers, json={
+    opened = client.post("/admin/actions", headers=second_headers, json={
         "action": "user.schedule_delete", "target_id": kept["id"], "payload": {},
         "reason": "We may not need this", "typed": kept["email"],
     })

@@ -13,40 +13,37 @@ from sqlalchemy.orm import Session
 from app.models.usage import UsageEvent
 from app.models.user import User
 
-# key, label shown in the admin area
-VISIT_LABELS: tuple[tuple[str, str], ...] = (
-    ("visit.home", "Home"),
-    ("visit.gallery", "Gallery"),
-    ("visit.tv", "TV World"),
-    ("visit.cards", "Cards"),
-    ("visit.catalog", "Catalog"),
-    ("visit.developers", "Developers"),
-    ("visit.network", "Network"),
-    ("visit.connections", "Connections"),
-    ("visit.post", "A post"),
-    ("visit.messages", "Messages"),
-    ("visit.profile", "Profile"),
-    ("visit.project", "A project"),
-    ("visit.workspace", "Project workspace"),
-    ("visit.activity", "Activity"),
-    ("visit.wrap", "Monthly wrap"),
-    ("visit.add_project", "Add project"),
-    ("visit.import", "GitHub import"),
-    ("visit.settings", "Settings"),
-    ("visit.opportunities", "Opportunities"),
-    ("visit.assessments", "Assessments"),
-    ("visit.recruit", "Recruiting"),
-    ("visit.about", "About"),
-    ("visit.other", "Other pages"),
+# key, label, area, kind. Every row is returned even when the count is zero.
+FEATURES: tuple[tuple[str, str, str, str], ...] = (
+    ("visit.gallery", "Gallery", "Explore", "page"),
+    ("visit.tv", "TV World", "Explore", "page"),
+    ("visit.cards", "Cards", "Explore", "page"),
+    ("visit.catalog", "Catalog", "Explore", "page"),
+    ("visit.developers", "Developers", "Explore", "page"),
+    ("scroll.horizontal", "Horizontal scrolling", "Explore", "feature"),
+    ("scroll.vertical", "Vertical scrolling", "Explore", "feature"),
+    ("visit.home", "Home", "Community", "page"),
+    ("visit.network", "Network", "Community", "page"),
+    ("visit.connections", "Connections", "Community", "page"),
+    ("visit.post", "A post", "Community", "page"),
+    ("visit.messages", "Messages", "Community", "page"),
+    ("visit.profile", "Profile", "Community", "page"),
+    ("visit.about", "About", "Community", "page"),
+    ("visit.project", "A project", "Projects", "page"),
+    ("visit.workspace", "Project workspace", "Projects", "page"),
+    ("visit.activity", "Activity", "Projects", "page"),
+    ("visit.add_project", "Add project", "Projects", "page"),
+    ("visit.import", "GitHub import", "Projects", "page"),
+    ("visit.recruit", "Recruiting", "Recruiting", "page"),
+    ("visit.opportunities", "Opportunities", "Recruiting", "page"),
+    ("visit.assessments", "Assessments", "Recruiting", "page"),
+    ("visit.wrap", "Monthly wrap", "Account", "page"),
+    ("visit.settings", "Settings", "Account", "page"),
+    ("visit.other", "Other pages", "Account", "page"),
 )
 
-SCROLL_LABELS = {
-    "scroll.horizontal": "Horizontal",
-    "scroll.vertical": "Vertical",
-}
-
-_LABELS = dict(VISIT_LABELS)
-_LABELS.update(SCROLL_LABELS)
+_LABELS = {key: label for key, label, _group, _kind in FEATURES}
+AREAS = ("Explore", "Community", "Projects", "Recruiting", "Account")
 _SKIP = ("/admin", "/auth", "/login", "/register", "/forgot-password", "/reset-password")
 
 
@@ -144,40 +141,54 @@ def record(db: Session, user: User, name: str | None) -> bool:
     return True
 
 
-def _counts(db: Session, since: datetime) -> dict[str, tuple[int, int]]:
-    rows = (
-        db.query(UsageEvent.name, func.count(UsageEvent.id), func.count(func.distinct(UsageEvent.user_id)))
-        .filter(UsageEvent.created_at >= since)
-        .group_by(UsageEvent.name)
-        .all()
-    )
+def _counts(db: Session, since: datetime | None, audience: str) -> dict[str, tuple[int, int]]:
+    query = db.query(UsageEvent.name, func.count(UsageEvent.id), func.count(func.distinct(UsageEvent.user_id)))
+    if audience in {"developer", "recruiter"}:
+        query = query.join(User, User.id == UsageEvent.user_id).filter(User.account_type == audience)
+    if since is not None:
+        query = query.filter(UsageEvent.created_at >= since)
+    rows = query.group_by(UsageEvent.name).all()
     return {name: (int(total), int(people)) for name, total, people in rows}
 
 
-def _stat(counts: dict[str, tuple[int, int]], key: str, label: str) -> dict:
-    total, people = counts.get(key, (0, 0))
-    return {"key": key, "label": label, "count": total, "people": people}
+def _share(count: int, total: int) -> float:
+    if total <= 0:
+        return 0
+    return round(count * 1000 / total) / 10
 
 
-def summarize(db: Session, days: int) -> dict:
-    days = min(max(days, 1), 90)
-    since = _now() - timedelta(days=days)
-    counts = _counts(db, since)
-    pages = [_stat(counts, key, label) for key, label in VISIT_LABELS if counts.get(key, (0, 0))[0] > 0]
-    pages.sort(key=lambda item: (-item["count"], item["label"]))
-    visits = sum(item["count"] for item in pages)
-    people = (
-        db.query(func.count(func.distinct(UsageEvent.user_id)))
-        .filter(UsageEvent.created_at >= since, UsageEvent.name.like("visit.%"))
-        .scalar()
-    )
+def summarize(db: Session, days: int, audience: str = "all") -> dict:
+    """Every page and feature, with its own visit count. Zero means nobody used it in this stretch."""
+    if audience not in {"all", "developer", "recruiter"}:
+        audience = "all"
+    bounded = 0 if days <= 0 else min(days, 365)
+    since = None if bounded == 0 else _now() - timedelta(days=bounded)
+    counts = _counts(db, since, audience)
+    page_total = sum(counts.get(key, (0, 0))[0] for key, _label, _group, kind in FEATURES if kind == "page")
+    feature_total = sum(counts.get(key, (0, 0))[0] for key, _label, _group, kind in FEATURES if kind == "feature")
+    rows = []
+    for key, label, group, kind in FEATURES:
+        total, people = counts.get(key, (0, 0))
+        base = page_total if kind == "page" else feature_total
+        rows.append({
+            "key": key,
+            "label": label,
+            "group": group,
+            "kind": kind,
+            "count": total,
+            "people": people,
+            "share": _share(total, base),
+        })
+    people_query = db.query(func.count(func.distinct(UsageEvent.user_id))).filter(UsageEvent.name.like("visit.%"))
+    if audience in {"developer", "recruiter"}:
+        people_query = people_query.join(User, User.id == UsageEvent.user_id).filter(User.account_type == audience)
+    if since is not None:
+        people_query = people_query.filter(UsageEvent.created_at >= since)
     return {
-        "days": days,
-        "visits": int(visits),
-        "people": int(people or 0),
-        "pages": pages,
-        "gallery": _stat(counts, "visit.gallery", "Gallery"),
-        "tv": _stat(counts, "visit.tv", "TV World"),
-        "horizontal": _stat(counts, "scroll.horizontal", "Horizontal"),
-        "vertical": _stat(counts, "scroll.vertical", "Vertical"),
+        "days": bounded,
+        "audience": audience,
+        "areas": list(AREAS),
+        "visits": int(page_total),
+        "people": int(people_query.scalar() or 0),
+        "rows": rows,
     }
