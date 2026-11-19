@@ -83,6 +83,9 @@ class UserResponse(BaseModel):
     account_type: str = "developer"
     deactivated_at: Optional[datetime] = None
     delete_after: Optional[datetime] = None
+    suspended_at: Optional[datetime] = None
+    is_platform_admin: bool = False
+    admin_role: Optional[str] = None
 
     class Config:
         from_attributes = True

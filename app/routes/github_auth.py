@@ -167,8 +167,8 @@ def github_callback(request: Request, code: str = "", state: str = "", error: st
     if user:
         try:
             user = account_lifecycle.reactivate_on_login(db, user)
-        except HTTPException:
-            return _fail("github_deleted")
+        except HTTPException as exc:
+            return _fail("account_suspended" if exc.status_code == 403 else "github_deleted")
         _fill_profile(db, user, gh)
         target = f"/auth/callback#token={issue_token(user)}"
     else:  # first visit: the account is created once the person picks a username
