@@ -42,6 +42,12 @@ class User(Base):
         return self.password_hash is not None
 
     @property
+    def avatar_url(self) -> str | None:
+        """Uploaded photo, when the profile is already loaded. Avoids a query during response building."""
+        profile = self.__dict__.get("profile")
+        return profile.avatar_url if profile is not None else None
+
+    @property
     def username_needs_choice(self) -> bool:
         """Accounts created before handles were required still have an email sitting in the username column."""
         from app.core.policy import normalize_username, username_problem

@@ -238,6 +238,11 @@ def change_username(data: UsernameChangeRequest, user: User = Depends(get_curren
 def get_current_user_info(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from app.services.platform_admin import claim_reserved_admin
     role = claim_reserved_admin(db, current_user)
+    profile = current_user.profile
     return UserResponse.model_validate(current_user).model_copy(
-        update={"is_platform_admin": role is not None, "admin_role": role}
+        update={
+            "is_platform_admin": role is not None,
+            "admin_role": role,
+            "avatar_url": profile.avatar_url if profile else None,
+        }
     )

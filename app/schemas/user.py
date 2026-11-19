@@ -86,6 +86,7 @@ class UserResponse(BaseModel):
     suspended_at: Optional[datetime] = None
     is_platform_admin: bool = False
     admin_role: Optional[str] = None
+    avatar_url: Optional[str] = None
 
     class Config:
         from_attributes = True
