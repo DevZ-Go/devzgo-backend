@@ -284,9 +284,16 @@ def add_activity_comment(activity_id: UUID, comment_data: ActivityCommentCreate,
 
     comment = ActivityComment(activity_id=activity_id, author_id=current_user.id, comment_text=text)
     db.add(comment)
+    db.flush()
     snippet = text if len(text) <= 40 else text[:40] + "..."
-    notify(db, activity.user_id, current_user, "comment", str(activity.id),
-           f"{display_name(current_user)} commented: \"{snippet}\"")
+    notify(
+        db,
+        activity.user_id,
+        current_user,
+        "comment",
+        f"{activity.id}:{comment.id}",
+        f"{display_name(current_user)} commented: \"{snippet}\"",
+    )
     db.commit()
     db.refresh(comment)
     return _comment_response(comment, current_user.id, activity.user_id)

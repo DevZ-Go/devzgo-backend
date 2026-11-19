@@ -53,8 +53,15 @@ def add_comment(project_id: UUID, data: ProjectCommentCreate, db: Session = Depe
         raise HTTPException(status_code=403, detail="This person only accepts comments from connections")
     comment = ProjectComment(project_id=project_id, author_id=user.id, body=data.body)
     db.add(comment)
-    notify(db, project.owner_id, user, "project_comment", str(project_id),
-           f"{display_name(user)} commented on your project \"{project.title}\".")
+    db.flush()
+    notify(
+        db,
+        project.owner_id,
+        user,
+        "project_comment",
+        f"{project_id}:{comment.id}",
+        f"{display_name(user)} commented on your project \"{project.title}\".",
+    )
     db.commit()
     db.refresh(comment)
     return _response(comment, project, user)
