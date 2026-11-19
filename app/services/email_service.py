@@ -40,12 +40,14 @@ PRIORITY = {
 def require_email_verification() -> bool:
     """OTP before account creation for email/password signup.
 
-    Explicit env wins. If unset, production frontends require verification and
-    localhost does not — so Render goes live without waiting on a new env var.
+    Explicit env wins. If unset: on when hosted on Render, or when FRONTEND_URL
+    points at a non-localhost origin; off for local docker/dev.
     """
     raw = os.getenv("REQUIRE_EMAIL_VERIFICATION")
     if raw is not None and raw.strip() != "":
         return raw.strip().lower() in {"1", "true", "yes", "on"}
+    if os.getenv("RENDER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
     front = (os.getenv("FRONTEND_URL") or "").strip().lower()
     if not front:
         return False
