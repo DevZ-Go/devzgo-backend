@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app.services.project_intelligence.analyzer import RawClaim
 from app.services.project_intelligence.constants import COMPOSER_VERSION
 from app.services.project_intelligence.quality import BRIEF_SCHEMA_VERSION, strip_readme_noise
@@ -257,20 +259,62 @@ def _audience(classification: dict, pages, routes, frameworks) -> str | None:
     return None
 
 
+def _human_page_name(page) -> str:
+    raw = str((page.extra or {}).get("name") or page.source_file or "").strip()
+    if not raw:
+        return ""
+    # Prefer last path segment without extension
+    base = raw.rsplit("/", 1)[-1]
+    base = re.sub(r"\.(tsx?|jsx?|vue|svelte)$", "", base, flags=re.I)
+    if base.lower() in {"page", "index", "main", "app"}:
+        parent = raw.rsplit("/", 2)
+        if len(parent) >= 2:
+            base = parent[-2]
+    label = re.sub(r"[-_]+", " ", base).strip()
+    return label.title() if label else ""
+
+
 def _capabilities(routes, pages, auth, models, classification) -> list[str]:
     caps: list[str] = []
     cat = classification.get("category")
+    page_names = []
+    for p in pages[:8]:
+        name = _human_page_name(p)
+        if name and name not in page_names:
+            page_names.append(name)
+
     if cat == "game" and pages:
-        caps.append("Play through interactive screens defined in the game interface.")
-    if pages and cat != "game":
-        n = min(len(pages), 12)
-        caps.append(f"Move between about {n} distinct screens or pages found in source.")
-    if routes:
+        if page_names:
+            caps.append(f"Play through screens such as {', '.join(page_names[:4])}.")
+        else:
+            caps.append("Play through interactive screens defined in the game interface.")
+    elif page_names:
+        caps.append(f"Open screens including {', '.join(page_names[:5])}.")
+    elif pages:
+        caps.append(f"Move between about {min(len(pages), 12)} distinct screens found in source.")
+
+    route_paths = []
+    for r in routes[:10]:
+        path = (r.extra or {}).get("path")
+        if path and path not in route_paths:
+            route_paths.append(str(path))
+    if route_paths:
+        caps.append(f"Server endpoints include {', '.join(route_paths[:5])}.")
+    elif routes:
         caps.append(f"Use about {min(len(routes), 40)} server routes found in source.")
+
     if auth:
         caps.append("Includes sign-in or access-control related code.")
     if models:
-        caps.append("Works with structured data models defined in the code.")
+        model_names = []
+        for m in models[:5]:
+            name = (m.extra or {}).get("name")
+            if name:
+                model_names.append(str(name))
+        if model_names:
+            caps.append(f"Works with data such as {', '.join(model_names)}.")
+        else:
+            caps.append("Works with structured data models defined in the code.")
     if classification.get("stack_nature") == "frontend" and not routes:
         caps.append("Focuses on the visual layer; server logic may live in a separate project.")
     return caps[:6]

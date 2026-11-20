@@ -8,7 +8,7 @@ import os
 ANALYZER_VERSION = "pi_analyzer_v2"
 COMPOSER_VERSION = "rule_v2"
 POLICY_VERSION = "pi_policy_v1"
-PROMPT_VERSION = "pi_prompt_v3"
+PROMPT_VERSION = "pi_prompt_v4"
 
 # Budgets (overridable via env for ops)
 MAX_SCAN_FILES = int(os.getenv("PI_MAX_SCAN_FILES", "800"))
