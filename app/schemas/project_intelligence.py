@@ -87,6 +87,12 @@ class InsightsOut(BaseModel):
     redacted: bool = False
     developer: dict = Field(default_factory=dict)
     simple_english: dict = Field(default_factory=dict)
+    # Flexible brief for the redesigned Understand UI
+    project_brief: dict = Field(default_factory=dict)
+    explanation_kind: Optional[str] = None  # ai | deterministic | developer | none
+    quality_status: Optional[str] = None
+    ai_explanation_valid: bool = False
+    schema_version: Optional[str] = None
 
 
 class DraftOut(BaseModel):

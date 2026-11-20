@@ -253,6 +253,13 @@ class ProjectAiPublication(Base):
     adopted_detailed = Column(Boolean, nullable=False, default=False, server_default=false())
     developer_short_backup = Column(Text, nullable=True)
     developer_full_backup = Column(Text, nullable=True)
+    # valid | low_quality | rejected | deterministic | unknown | stale
+    quality_status = Column(String(32), nullable=False, default="unknown", server_default="unknown")
+    schema_version = Column(String(40), nullable=False, default="legacy", server_default="legacy")
+    prompt_version = Column(String(40), nullable=True)
+    # ai | deterministic
+    explanation_kind = Column(String(32), nullable=False, default="ai", server_default="ai")
+    quality_reasons = Column(JSONB, nullable=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     updated_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 

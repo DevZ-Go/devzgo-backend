@@ -32,21 +32,19 @@ def is_platform_admin(db: Session, user: User) -> bool:
 
 
 def community_summary_ready(db: Session, project_id: UUID) -> bool:
-    """True when visitors can already read a simple/technical AI writeup for this project."""
+    """True when a valid AI brief already exists (low-quality legacy rows do not count)."""
+    from app.models.project import Project
+    from app.services.project_intelligence.quality import QUALITY_VALID, is_valid_ai_explanation
+
     pub = db.query(ProjectAiPublication).filter(ProjectAiPublication.project_id == project_id).first()
     if not pub:
         return False
     simple = pub.simple_explanation or {}
-    has_simple = bool(
-        simple.get("how_it_works")
-        or simple.get("what_it_does")
-        or simple.get("what_is_this")
-        or pub.ai_short_description
-        or (pub.key_features or [])
-    )
-    has_tech = bool(pub.technical_explanation or pub.ai_detailed_description)
-    # Content on the publication is enough — legacy rows may have publish_simple=false.
-    return has_simple or has_tech
+    if getattr(pub, "quality_status", None) == QUALITY_VALID and (simple.get("overview") or simple.get("headline")):
+        return True
+    project = db.query(Project).filter(Project.id == project_id).first()
+    title = project.title if project else ""
+    return is_valid_ai_explanation(simple, title=title or "")
 
 
 def visitor_quota_status(db: Session, user: User) -> dict:

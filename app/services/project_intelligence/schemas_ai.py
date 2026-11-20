@@ -14,19 +14,38 @@ class EvidenceRefOut(BaseModel):
 
 
 class FreeAiPackageSchema(BaseModel):
-    """Free plan: short description + mandatory simple English + features. No long overview."""
+    """Flexible plain-English project brief. Omit weak fields rather than saying 'not confirmed'."""
 
     short_description: str = Field(..., max_length=280)
-    what_is_this: str = Field(..., max_length=400)
-    what_it_does: str = Field(..., max_length=500)
-    why_use_it: str = Field(..., max_length=400)
-    who_benefits: str = Field(..., max_length=300)
-    how_it_works_simple: str = Field(..., max_length=700)
+    headline: str = Field(..., max_length=160)
+    overview: str = Field(..., max_length=700)
+    features: List[str] = Field(default_factory=list, max_length=6)
+    purpose: str = Field(default="", max_length=400)
+    audience: str = Field(default="", max_length=300)
+    context: str = Field(default="", max_length=300)
+    scope: str = Field(default="", max_length=300)
+    workflow: str = Field(default="", max_length=700)
+    limitations: List[str] = Field(default_factory=list, max_length=4)
+    category: str = Field(default="", max_length=40)
+    stack_nature: str = Field(default="", max_length=40)
+    standalone: Optional[bool] = None
+    # Legacy aliases still accepted from older model responses
+    what_is_this: str = Field(default="", max_length=400)
+    what_it_does: str = Field(default="", max_length=500)
+    why_use_it: str = Field(default="", max_length=400)
+    who_benefits: str = Field(default="", max_length=300)
+    how_it_works_simple: str = Field(default="", max_length=700)
     key_features: List[str] = Field(default_factory=list, max_length=6)
     uncertainties: List[str] = Field(default_factory=list, max_length=4)
     evidence_refs: List[EvidenceRefOut] = Field(default_factory=list, max_length=8)
 
-    @field_validator("key_features", "uncertainties", mode="before")
+    @field_validator(
+        "features",
+        "key_features",
+        "limitations",
+        "uncertainties",
+        mode="before",
+    )
     @classmethod
     def _listify(cls, value):
         if value is None:

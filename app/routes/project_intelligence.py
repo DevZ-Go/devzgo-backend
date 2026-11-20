@@ -279,6 +279,16 @@ def get_insights(
     settings = get_pi_settings(db)
     if not settings.get("visitor_insights_enabled", True) and not is_team:
         return InsightsOut(available=False, redacted=True)
+    from app.services.project_intelligence.quality import (
+        QUALITY_DETERMINISTIC,
+        QUALITY_LOW,
+        QUALITY_VALID,
+        brief_from_legacy_simple,
+        developer_brief,
+        is_valid_ai_explanation,
+        score_explanation_quality,
+    )
+
     insight = latest_insight(db, project_id)
     pub = get_publication(db, project_id)
     developer = {
@@ -287,63 +297,105 @@ def get_insights(
         "full_description": project.full_description or "",
     }
 
-    def _has_simple_payload(payload: dict | None) -> bool:
-        if not payload:
-            return False
-        for key in ("what_is_this", "what_it_does", "why_use_it", "who_benefits", "how_it_works"):
-            if str(payload.get(key) or "").strip():
-                return True
-        feats = payload.get("key_features") or payload.get("capabilities") or []
-        return bool(feats)
-
-    # Visitors should see AI writeups already saved for a project. Legacy rows may have
-    # publish_simple=false even when content exists; surface that content when visitor insights are on.
     visitor_ok = bool(settings.get("visitor_insights_enabled", True))
-    show_simple_ai = bool(
+    pub_simple = dict(pub.simple_explanation) if pub and pub.simple_explanation else {}
+    if pub and pub.key_features and not pub_simple.get("features") and not pub_simple.get("key_features"):
+        pub_simple["key_features"] = pub.key_features
+
+    # Re-score legacy publications so low-quality cached AI is not treated as final.
+    stored_status = getattr(pub, "quality_status", None) if pub else None
+    if pub and pub_simple and stored_status in (None, "", "unknown"):
+        scored = score_explanation_quality(pub_simple, title=project.title or "")
+        stored_status = scored["status"]
+    ai_valid = bool(
         pub
-        and pub.simple_explanation
-        and (is_team or pub.publish_simple or (visitor_ok and _has_simple_payload(pub.simple_explanation)))
+        and pub_simple
+        and (
+            stored_status == QUALITY_VALID
+            or (stored_status not in (QUALITY_LOW, "rejected", QUALITY_DETERMINISTIC) and is_valid_ai_explanation(pub_simple, title=project.title or ""))
+        )
     )
+    publish_ok = bool(pub and (is_team or pub.publish_simple or (visitor_ok and ai_valid)))
+    show_simple_ai = bool(ai_valid and publish_ok)
     show_detailed_ai = bool(
         pub
+        and ai_valid
         and (
             is_team
             or pub.show_detailed_on_page
-            or (
-                visitor_ok
-                and (
-                    bool(pub.technical_explanation)
-                    or bool(pub.ai_detailed_description)
-                )
-            )
+            or (visitor_ok and (bool(pub.technical_explanation) or bool(pub.ai_detailed_description)))
         )
     )
 
+    project_brief: dict = {}
+    explanation_kind = "none"
+    quality_status = stored_status
     simple_english: dict = {}
-    if show_simple_ai and pub and pub.simple_explanation:
-        simple_english = dict(pub.simple_explanation)
-        if pub.key_features and not simple_english.get("key_features"):
-            simple_english["key_features"] = pub.key_features
-    elif insight:
-        everyday = insight.everyday or {}
+
+    if show_simple_ai and pub_simple:
+        project_brief = brief_from_legacy_simple(pub_simple, title=project.title or "", features=pub.key_features if pub else None)
+        explanation_kind = "ai"
+        quality_status = QUALITY_VALID
+        # Legacy Q&A mirror for older clients (only populate non-empty)
         simple_english = {
-            "what_it_does": everyday.get("what_it_does") or everyday.get("one_sentence") or "",
-            "why_use_it": everyday.get("problem") or "",
-            "who_benefits": everyday.get("who_could_use_it") or "",
-            "capabilities": everyday.get("capabilities") or [],
-            "how_it_works": everyday.get("how_it_works") or "",
-            "uncertainties": insight.uncertainties or everyday.get("uncertainties") or [],
+            "what_is_this": project_brief.get("headline") or "",
+            "what_it_does": project_brief.get("overview") or "",
+            "why_use_it": project_brief.get("purpose") or "",
+            "who_benefits": project_brief.get("audience") or "",
+            "how_it_works": project_brief.get("workflow") or "",
+            "key_features": project_brief.get("features") or [],
+            "capabilities": project_brief.get("features") or [],
+            "uncertainties": project_brief.get("limitations") or [],
         }
-    elif project.short_description or project.full_description:
-        # Fallback so visitors always get a plain-language block for uploaded projects.
-        simple_english = {
-            "what_is_this": project.title or "",
-            "what_it_does": project.short_description or "",
-            "how_it_works": project.full_description or "",
-            "why_use_it": "",
-            "who_benefits": "",
-            "capabilities": [],
-        }
+    else:
+        # Prefer deterministic composer brief, then developer text — never title-only placeholders.
+        everyday = (insight.everyday if insight else {}) or {}
+        det = everyday.get("project_brief") if isinstance(everyday.get("project_brief"), dict) else None
+        if det and (det.get("overview") or det.get("headline")):
+            project_brief = dict(det)
+            explanation_kind = "deterministic"
+            quality_status = QUALITY_DETERMINISTIC
+            simple_english = {
+                "what_is_this": project_brief.get("headline") or "",
+                "what_it_does": project_brief.get("overview") or "",
+                "why_use_it": project_brief.get("purpose") or "",
+                "who_benefits": project_brief.get("audience") or "",
+                "how_it_works": project_brief.get("workflow") or "",
+                "key_features": project_brief.get("features") or everyday.get("capabilities") or [],
+                "capabilities": project_brief.get("features") or everyday.get("capabilities") or [],
+                "uncertainties": project_brief.get("limitations")
+                or (list(insight.uncertainties) if insight and insight.uncertainties else []),
+            }
+        else:
+            dev_b = developer_brief(
+                project.title or "",
+                project.short_description or "",
+                project.full_description or "",
+            )
+            if dev_b:
+                project_brief = dev_b
+                explanation_kind = "developer"
+                quality_status = QUALITY_DETERMINISTIC
+                simple_english = {
+                    "what_is_this": project_brief.get("headline") or "",
+                    "what_it_does": project_brief.get("overview") or "",
+                    "how_it_works": project_brief.get("workflow") or "",
+                    "key_features": [],
+                    "capabilities": [],
+                }
+            elif insight:
+                simple_english = {
+                    "what_it_does": everyday.get("what_it_does") or everyday.get("one_sentence") or "",
+                    "why_use_it": everyday.get("problem") or "",
+                    "who_benefits": everyday.get("who_could_use_it") or "",
+                    "capabilities": everyday.get("capabilities") or [],
+                    "how_it_works": everyday.get("how_it_works") or "",
+                    "uncertainties": insight.uncertainties or everyday.get("uncertainties") or [],
+                }
+                if simple_english.get("what_it_does"):
+                    project_brief = brief_from_legacy_simple(simple_english, title=project.title or "")
+                    explanation_kind = "deterministic"
+                    quality_status = QUALITY_DETERMINISTIC
 
     technical = (insight.technical if insight else {}) or {}
     if pub and pub.technical_explanation and (is_team or show_detailed_ai):
@@ -356,15 +408,7 @@ def get_insights(
         technical = redact_technical(technical)
         redacted = True
 
-    has_content = bool(
-        project.short_description
-        or project.full_description
-        or insight
-        or show_simple_ai
-        or show_detailed_ai
-        or _has_simple_payload(simple_english)
-        or technical
-    )
+    has_content = bool(project_brief or insight or show_detailed_ai or project.short_description)
     if not has_content:
         return InsightsOut(available=False)
 
@@ -373,12 +417,17 @@ def get_insights(
         audience=insight.audience if insight else "public",
         everyday=(insight.everyday if insight else {}) or {},
         technical=technical,
-        uncertainties=(insight.uncertainties if insight else []) or simple_english.get("uncertainties") or [],
+        uncertainties=(insight.uncertainties if insight else []) or project_brief.get("limitations") or [],
         snapshot_id=insight.snapshot_id if insight else None,
         composer_version=insight.composer_version if insight else None,
         redacted=redacted,
         developer=developer,
         simple_english=simple_english,
+        project_brief=project_brief,
+        explanation_kind=explanation_kind,
+        quality_status=quality_status,
+        ai_explanation_valid=show_simple_ai,
+        schema_version=project_brief.get("schema_version") if project_brief else None,
     )
 
 
@@ -526,23 +575,27 @@ def visitor_generate_ai(
         or existing_draft.short_description
         or (existing_draft.key_features or [])
     ):
-        approve_draft(
-            db,
-            project,
-            existing_draft,
-            apply_fields={
-                "publish_simple": True,
-                "show_detailed_on_page": bool(existing_draft.technical_explanation),
-            },
-            user_id=me.id,
-        )
-        record_visitor_request(db, user_id=me.id, project_id=project_id, was_cache_hit=True)
-        db.commit()
-        return JobStatusOut(
-            status="ready",
-            job_kind="visitor_generate",
-            progress={"stage": "published_existing", "draft_id": str(existing_draft.id), "community": True},
-        )
+        try:
+            approve_draft(
+                db,
+                project,
+                existing_draft,
+                apply_fields={
+                    "publish_simple": True,
+                    "show_detailed_on_page": bool(existing_draft.technical_explanation),
+                },
+                user_id=me.id,
+            )
+            record_visitor_request(db, user_id=me.id, project_id=project_id, was_cache_hit=True)
+            db.commit()
+            return JobStatusOut(
+                status="ready",
+                job_kind="visitor_generate",
+                progress={"stage": "published_existing", "draft_id": str(existing_draft.id), "community": True},
+            )
+        except RuntimeError:
+            # Low-quality legacy draft — fall through and generate a fresh brief.
+            pass
 
     # Community generation: grant consent for this requester; enable external AI for the shared summary
     pref = get_project_settings(db, project_id)
@@ -585,24 +638,27 @@ def visitor_generate_ai(
         raise HTTPException(status_code=402, detail={"message": str(exc), "quota": {**vstatus, **(exc.status or {})}})
 
     if cached_draft is not None and record.status == "cache_hit":
-        approve_draft(
-            db,
-            project,
-            cached_draft,
-            apply_fields={
-                "publish_simple": True,
-                "show_detailed_on_page": bool(cached_draft.technical_explanation),
-            },
-            user_id=me.id,
-        )
-        record_visitor_request(
-            db,
-            user_id=me.id,
-            project_id=project_id,
-            was_cache_hit=True,
-            generation_record_id=record.id,
-        )
-        db.commit()
+        try:
+            approve_draft(
+                db,
+                project,
+                cached_draft,
+                apply_fields={
+                    "publish_simple": True,
+                    "show_detailed_on_page": bool(cached_draft.technical_explanation),
+                },
+                user_id=me.id,
+            )
+            record_visitor_request(
+                db,
+                user_id=me.id,
+                project_id=project_id,
+                was_cache_hit=True,
+                generation_record_id=record.id,
+            )
+            db.commit()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return JobStatusOut(
             status="ready",
             job_kind="visitor_generate",
@@ -781,20 +837,23 @@ def approve(
     )
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
-    approve_draft(
-        db,
-        project,
-        draft,
-        apply_fields={
-            "short_description": data.apply_short_description,
-            "full_description": data.apply_full_description,
-            "publish_simple": data.publish_simple,
-            "show_detailed_on_page": data.show_detailed_on_page,
-            "adopt_short": data.adopt_short,
-            "adopt_detailed": data.adopt_detailed,
-        },
-        user_id=me.id,
-    )
+    try:
+        approve_draft(
+            db,
+            project,
+            draft,
+            apply_fields={
+                "short_description": data.apply_short_description,
+                "full_description": data.apply_full_description,
+                "publish_simple": data.publish_simple,
+                "show_detailed_on_page": data.show_detailed_on_page,
+                "adopt_short": data.adopt_short,
+                "adopt_detailed": data.adopt_detailed,
+            },
+            user_id=me.id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     db.commit()
     db.refresh(draft)
     return _draft_out(draft)

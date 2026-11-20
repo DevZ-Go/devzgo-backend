@@ -81,7 +81,9 @@ def test_composer_admits_uncertainty_without_readme_purpose(tmp_path: Path):
         coverage_pct=bundle.coverage_pct,
     )
     text = " ".join(composed["uncertainties"]).lower()
-    assert "uncertain" in text or "could not" in composed["everyday"]["what_it_does"].lower() or "not confirmed" in composed["everyday"]["problem"].lower()
+    assert "overview" in text or "routes" in text or "pages" in text or "prove" in text
+    assert composed.get("project_brief", {}).get("headline")
+    assert "npm" not in (composed.get("project_brief") or {}).get("overview", "").lower()
 
 
 def test_prompt_injection_in_readme_does_not_become_runtime_claim(tmp_path: Path):

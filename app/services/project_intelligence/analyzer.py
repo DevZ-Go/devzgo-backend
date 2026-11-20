@@ -225,6 +225,8 @@ def _deps_from_python_manifest(claims: list[RawClaim], rel: str, text: str, name
 
 def _readme_claims(claims: list[RawClaim], rel: str, text: str) -> None:
     # README is untrusted documentation — mark as documented, not runtime-verified.
+    from app.services.project_intelligence.quality import strip_readme_noise
+
     words = len(re.findall(r"[A-Za-z]{2,}", text))
     _add(claims, RawClaim(
         claim_type="documentation",
@@ -235,17 +237,16 @@ def _readme_claims(claims: list[RawClaim], rel: str, text: str) -> None:
         extra={"words": words},
         refs=[{"source_file": rel, "line_start": 1, "label": "README"}],
     ))
-    # First non-empty paragraph as documented purpose candidate only
-    body = re.sub(r"^#.*$", "", text, flags=re.M).strip()
-    para = next((p.strip() for p in re.split(r"\n\s*\n", body) if p.strip() and not p.strip().startswith("```")), "")
-    if para and len(para) > 40:
-        snippet = re.sub(r"\s+", " ", para)[:280]
+    # Prefer a cleaned overview — skip install steps, Vite boilerplate, and markdown tables.
+    snippet = strip_readme_noise(text, max_chars=280)
+    if snippet and len(snippet) > 40:
         _add(claims, RawClaim(
             claim_type="documented_purpose",
             wording=f"README describes the project as: {snippet}",
             support_class="documented",
             source_file=rel,
             visibility="public",
+            extra={"overview": snippet},
             refs=[{"source_file": rel, "label": "README overview"}],
         ))
 
