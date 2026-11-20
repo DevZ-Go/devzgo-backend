@@ -60,6 +60,7 @@ from app.routes.badges import router as badges_router
 from app.routes.resume_studio import router as resume_studio_router
 from app.routes.evaluations import router as evaluations_router
 from app.routes.project_intelligence import router as project_intelligence_router
+from app.routes.clubs import router as clubs_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -169,6 +170,7 @@ app.include_router(badges_router)
 app.include_router(resume_studio_router)
 app.include_router(evaluations_router)
 app.include_router(project_intelligence_router)
+app.include_router(clubs_router)
 
 
 def _sweep_workspace() -> None:

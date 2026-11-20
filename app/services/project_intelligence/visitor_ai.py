@@ -32,16 +32,21 @@ def is_platform_admin(db: Session, user: User) -> bool:
 
 
 def community_summary_ready(db: Session, project_id: UUID) -> bool:
+    """True when visitors can already read a simple/technical AI writeup for this project."""
     pub = db.query(ProjectAiPublication).filter(ProjectAiPublication.project_id == project_id).first()
-    if not pub or not pub.publish_simple:
+    if not pub:
         return False
     simple = pub.simple_explanation or {}
-    return bool(
+    has_simple = bool(
         simple.get("how_it_works")
         or simple.get("what_it_does")
+        or simple.get("what_is_this")
         or pub.ai_short_description
         or (pub.key_features or [])
     )
+    has_tech = bool(pub.technical_explanation or pub.ai_detailed_description)
+    # Content on the publication is enough — legacy rows may have publish_simple=false.
+    return has_simple or has_tech
 
 
 def visitor_quota_status(db: Session, user: User) -> dict:

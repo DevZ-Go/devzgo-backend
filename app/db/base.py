@@ -16,7 +16,8 @@ from app.models.collaboration import CollaborationRequest, ProjectCollaborator, 
 from app.models.github_history import ProjectCommit, ProjectContributor, ProjectPush
 from app.models.notification import Notification
 from app.models.project_like import ProjectLike
-from app.models.project_comment import ProjectComment
+from app.models.project_comment import ProjectComment, ProjectCommentLike  # noqa: F401
+from app.models.clubs import ClubCustomRole, ClubMember, NetworkClub  # noqa: F401
 from app.models.password_reset import PasswordResetToken
 from app.models.monthly_wrap import MonthlyWrap
 from app.models.recruiting import RecruitmentRequest, Shortlist, ShortlistEntry

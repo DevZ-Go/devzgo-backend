@@ -286,8 +286,41 @@ def get_insights(
         "short_description": project.short_description or "",
         "full_description": project.full_description or "",
     }
+
+    def _has_simple_payload(payload: dict | None) -> bool:
+        if not payload:
+            return False
+        for key in ("what_is_this", "what_it_does", "why_use_it", "who_benefits", "how_it_works"):
+            if str(payload.get(key) or "").strip():
+                return True
+        feats = payload.get("key_features") or payload.get("capabilities") or []
+        return bool(feats)
+
+    # Visitors should see AI writeups already saved for a project. Legacy rows may have
+    # publish_simple=false even when content exists; surface that content when visitor insights are on.
+    visitor_ok = bool(settings.get("visitor_insights_enabled", True))
+    show_simple_ai = bool(
+        pub
+        and pub.simple_explanation
+        and (is_team or pub.publish_simple or (visitor_ok and _has_simple_payload(pub.simple_explanation)))
+    )
+    show_detailed_ai = bool(
+        pub
+        and (
+            is_team
+            or pub.show_detailed_on_page
+            or (
+                visitor_ok
+                and (
+                    bool(pub.technical_explanation)
+                    or bool(pub.ai_detailed_description)
+                )
+            )
+        )
+    )
+
     simple_english: dict = {}
-    if pub and pub.publish_simple and pub.simple_explanation:
+    if show_simple_ai and pub and pub.simple_explanation:
         simple_english = dict(pub.simple_explanation)
         if pub.key_features and not simple_english.get("key_features"):
             simple_english["key_features"] = pub.key_features
@@ -301,11 +334,21 @@ def get_insights(
             "how_it_works": everyday.get("how_it_works") or "",
             "uncertainties": insight.uncertainties or everyday.get("uncertainties") or [],
         }
+    elif project.short_description or project.full_description:
+        # Fallback so visitors always get a plain-language block for uploaded projects.
+        simple_english = {
+            "what_is_this": project.title or "",
+            "what_it_does": project.short_description or "",
+            "how_it_works": project.full_description or "",
+            "why_use_it": "",
+            "who_benefits": "",
+            "capabilities": [],
+        }
 
     technical = (insight.technical if insight else {}) or {}
-    if pub and pub.technical_explanation:
+    if pub and pub.technical_explanation and (is_team or show_detailed_ai):
         technical = {**technical, "architecture": pub.technical_explanation}
-    if pub and pub.show_detailed_on_page and pub.ai_detailed_description:
+    if pub and pub.ai_detailed_description and show_detailed_ai:
         technical = {**technical, "ai_detailed_description": pub.ai_detailed_description}
 
     redacted = False
@@ -317,7 +360,10 @@ def get_insights(
         project.short_description
         or project.full_description
         or insight
-        or (pub and (pub.publish_simple or pub.show_detailed_on_page))
+        or show_simple_ai
+        or show_detailed_ai
+        or _has_simple_payload(simple_english)
+        or technical
     )
     if not has_content:
         return InsightsOut(available=False)
