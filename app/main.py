@@ -122,13 +122,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Public media only: covers, videos, and profile photos. Do not expose storage/project_<uuid>/.
+# Public media only: covers, videos, profile photos, club art. Do not expose storage/project_<uuid>/.
+_PUBLIC_MEDIA_KINDS = ("covers", "videos", "avatars", "resumes", "club-banners", "club-avatars")
 if storage.is_s3():
     @app.get("/storage/{kind}/{name}", include_in_schema=False)
-    def media_redirect(kind: Literal["covers", "videos", "avatars", "resumes"], name: str):
+    def media_redirect(
+        kind: Literal["covers", "videos", "avatars", "resumes", "club-banners", "club-avatars"],
+        name: str,
+    ):
         return RedirectResponse(storage.url(f"{kind}/{name}"))
 else:
-    for kind in ("covers", "videos", "avatars", "resumes"):
+    for kind in _PUBLIC_MEDIA_KINDS:
         (storage.ROOT / kind).mkdir(parents=True, exist_ok=True)
         app.mount(f"/storage/{kind}", StaticFiles(directory=str(storage.ROOT / kind)), name=f"storage_{kind}")
 app.include_router(media_router)

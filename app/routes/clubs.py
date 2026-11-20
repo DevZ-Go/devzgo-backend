@@ -7,7 +7,7 @@ import uuid
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
@@ -18,7 +18,10 @@ from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.clubs import EXEC_ROLES, ClubCustomRole, ClubMember, NetworkClub
 from app.models.user import User
+from app.services import storage
 from app.services.social import display_name
+
+BANNER_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
 
 router = APIRouter(prefix="/groups", tags=["Network clubs"])
 
@@ -137,6 +140,17 @@ def _require_president(club: NetworkClub, user_id: UUID) -> ClubMember:
     return m
 
 
+def _require_role_manager(club: NetworkClub, user_id: UUID) -> ClubMember:
+    """President manages roles; if the club has no president yet, the founder (created_by) may."""
+    has_president = any(m.role == "president" for m in (club.members or []))
+    m = next((x for x in club.members if x.user_id == user_id), None)
+    if m and m.role == "president":
+        return m
+    if not has_president and club.created_by and club.created_by == user_id and m:
+        return m
+    raise HTTPException(status_code=403, detail="Only the club president can do that")
+
+
 class ClubCreateIn(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     tagline: str = Field(default="", max_length=280)
@@ -144,6 +158,9 @@ class ClubCreateIn(BaseModel):
     category: str = Field(default="general", max_length=40)
     tags: list[str] = Field(default_factory=list)
     policies: str = Field(default="", max_length=12000)
+    bannerUrl: Optional[str] = None
+    avatarUrl: Optional[str] = None
+    hostTitle: Optional[str] = Field(default=None, max_length=120)
 
 
 class ClubPatchIn(BaseModel):
@@ -256,6 +273,16 @@ def get_group(
 
 @router.post("", dependencies=[rate_limit("club-create", 6, 600)])
 def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = Depends(require_developer)):
+    # One presidency per person: if they already lead another club, join this one as Founder (executive).
+    already_president = (
+        db.query(ClubMember.club_id)
+        .filter(ClubMember.user_id == me.id, ClubMember.role == "president")
+        .first()
+        is not None
+    )
+    role = "executive" if already_president else "president"
+    title = (data.hostTitle or "").strip() or ("Founder" if already_president else "President")
+
     club = NetworkClub(
         id=uuid.uuid4(),
         slug=_unique_slug(db, data.name),
@@ -265,6 +292,8 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
         category=(data.category or "general").strip()[:40],
         tags=[t.strip() for t in (data.tags or []) if t.strip()][:20],
         policies=(data.policies or "").strip(),
+        banner_url=(data.bannerUrl or None),
+        avatar_url=(data.avatarUrl or None),
         created_by=me.id,
     )
     db.add(club)
@@ -273,8 +302,8 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
         ClubMember(
             club_id=club.id,
             user_id=me.id,
-            role="president",
-            custom_title="President",
+            role=role,
+            custom_title=title,
         )
     )
     try:
@@ -283,7 +312,7 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
         db.rollback()
         raise HTTPException(
             status_code=409,
-            detail="You are already president of another club. Transfer that presidency before creating a new club as president.",
+            detail="Could not create this club (presidency conflict). Transfer an existing presidency or try again.",
         )
     return _club_out(_load_club(db, str(club.id)), me.id)
 
@@ -353,14 +382,18 @@ def update_member_role(
     me: User = Depends(require_developer),
 ):
     club = _load_club(db, club_id)
-    actor = _require_president(club, me.id)
+    actor = _require_role_manager(club, me.id)
     role = ROLE_ALIASES.get((data.role or "").strip().lower())
     if not role:
         raise HTTPException(status_code=400, detail="Invalid role")
     target = next((m for m in club.members if m.user_id == target_user_id), None)
     if not target:
         raise HTTPException(status_code=404, detail="Member not found")
-    if target.user_id == actor.user_id and role != "president":
+    if (
+        actor.role == "president"
+        and target.user_id == actor.user_id
+        and role != "president"
+    ):
         raise HTTPException(status_code=400, detail="Assign a new president before stepping down.")
 
     title = (data.customTitle or "").strip() or None
@@ -432,3 +465,51 @@ def delete_custom_role(
     db.delete(row)
     db.commit()
     return None
+
+
+@router.post("/{club_id}/banner", dependencies=[rate_limit("club-banner", 20, 60)])
+def upload_club_banner(
+    club_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    club = _load_club(db, club_id)
+    _require_exec(club, me.id)
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
+    file.file.seek(0, 2)
+    too_big = file.file.tell() > 8 * 1024 * 1024
+    file.file.seek(0)
+    if too_big:
+        raise HTTPException(status_code=413, detail="Banner is larger than 8 MB")
+    name = f"{club.id}_{uuid.uuid4().hex}.{ext}"
+    storage.save(f"club-banners/{name}", file.file)
+    club.banner_url = f"/storage/club-banners/{name}"
+    db.commit()
+    return _club_out(_load_club(db, str(club.id)), me.id)
+
+
+@router.post("/{club_id}/avatar", dependencies=[rate_limit("club-avatar", 20, 60)])
+def upload_club_avatar(
+    club_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    club = _load_club(db, club_id)
+    _require_exec(club, me.id)
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
+    file.file.seek(0, 2)
+    too_big = file.file.tell() > 5 * 1024 * 1024
+    file.file.seek(0)
+    if too_big:
+        raise HTTPException(status_code=413, detail="Photo is larger than 5 MB")
+    name = f"{club.id}_{uuid.uuid4().hex}.{ext}"
+    storage.save(f"club-avatars/{name}", file.file)
+    club.avatar_url = f"/storage/club-avatars/{name}"
+    db.commit()
+    return _club_out(_load_club(db, str(club.id)), me.id)
