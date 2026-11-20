@@ -392,3 +392,83 @@ def grant_pi_premium(
     )
     db.commit()
     return {"ok": True, "user_id": str(user.id), "email": user.email, "premium": not revoke}
+
+
+@router.get("/project-intelligence/users")
+def list_pi_ai_users(
+    q: str | None = Query(default=None, max_length=120),
+    limit: int = Query(default=50, ge=1, le=200),
+    ctx: AdminContext = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """List users with Project Intelligence AI usage (month + lifetime spend)."""
+    from app.services.project_intelligence.admin_ops import list_ai_users
+
+    return {"users": list_ai_users(db, q=q, limit=limit)}
+
+
+@router.get("/project-intelligence/users/{user_id}")
+def get_pi_ai_user_detail(
+    user_id: UUID,
+    ledger_limit: int = Query(default=100, ge=1, le=500),
+    ctx: AdminContext = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Full AI usage detail for one user: months, ledger, generations, visitor requests, projects."""
+    from app.services.project_intelligence.admin_ops import user_ai_detail
+
+    try:
+        return user_ai_detail(db, user_id, ledger_limit=ledger_limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/project-intelligence/projects/{project_id}/regenerate")
+def admin_regenerate_project_summary(
+    project_id: UUID,
+    body: dict | None = None,
+    ctx: AdminContext = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Force-regenerate a project AI summary. Does not burn the owner's monthly allowance; cost is logged."""
+    from app.models.admin import AdminAuditEvent
+    from app.services.project_intelligence.admin_ops import admin_regenerate_project
+
+    payload = body or {}
+    publish = payload.get("publish", True)
+    include_detailed = bool(payload.get("include_detailed", False))
+    try:
+        result = admin_regenerate_project(
+            db,
+            project_id=project_id,
+            admin_user=ctx.user,
+            publish=bool(publish),
+            include_detailed=include_detailed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    db.add(
+        AdminAuditEvent(
+            actor_id=ctx.user.id,
+            actor_email=ctx.user.email,
+            action="pi_admin_regenerate",
+            summary=f"Regenerated AI summary for {result.get('project_title') or project_id}",
+            severity="info",
+            target_type="project",
+            target_id=str(project_id),
+            payload={
+                "draft_id": result.get("draft_id"),
+                "job_id": result.get("job_id"),
+                "published": result.get("published"),
+                "quality_status": result.get("quality_status"),
+                "include_detailed": include_detailed,
+            },
+        )
+    )
+    db.commit()
+    return result
+

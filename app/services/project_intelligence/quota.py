@@ -348,14 +348,18 @@ def reserve_generation(
     is_regeneration: bool,
     advanced: bool = False,
     community: bool = False,
+    admin: bool = False,
+    force: bool = False,
 ) -> tuple[PiGenerationRecord, ProjectAiDescriptionDraft | None]:
     """Atomically reserve quota or return a cache hit draft (no charge).
 
     community=True: visitor/community summaries — still cost-protected, but does not
     consume the user's monthly owner AI-project entitlement (tracked separately).
+    admin=True: platform admin regenerate — cost-protected, never burns user allowance.
+    force=True: skip successful cache hits (always run a new model call when reserved).
     """
     settings = get_pi_settings(db)
-    if community:
+    if community or admin:
         # Use free-tier token budgets; skip owner package entitlement checks.
         premium = False
         status = {
@@ -369,10 +373,10 @@ def reserve_generation(
     else:
         status = assert_can_generate_package(db, user_id, project_id, is_regeneration=is_regeneration)
         premium = status["premium"]
-    model = pick_model(settings, premium=premium, advanced=advanced and not community)
-    selection = normalize_outputs(selection, premium=premium and not community)
-    # Community packages always include simple English + short; never long premium fields
-    if community:
+    model = pick_model(settings, premium=premium, advanced=advanced and not community and not admin)
+    selection = normalize_outputs(selection, premium=premium and not community and not admin)
+    # Community/admin packages always include simple English + short; never long premium fields
+    if community or admin:
         selection = normalize_outputs({"detailed_description": False}, premium=False)
     cache_key = make_cache_key(
         project_id=project_id,
@@ -380,6 +384,8 @@ def reserve_generation(
         selection=selection,
         model=model,
     )
+    if force:
+        cache_key = f"{cache_key}:force:{idempotency_key[-24:]}"
 
     existing_idem = (
         db.query(PiGenerationRecord)
@@ -392,30 +398,36 @@ def reserve_generation(
             draft = db.query(ProjectAiDescriptionDraft).filter_by(id=existing_idem.draft_id).first()
         return existing_idem, draft
 
-    cached = find_cached_generation(db, cache_key)
-    if cached and cached.draft_id:
-        draft = db.query(ProjectAiDescriptionDraft).filter_by(id=cached.draft_id).first()
-        hit = PiGenerationRecord(
-            id=uuid.uuid4(),
-            user_id=user_id,
-            project_id=project_id,
-            snapshot_id=snapshot_id,
-            draft_id=cached.draft_id,
-            idempotency_key=idempotency_key,
-            cache_key=cache_key,
-            kind="community" if community else ("regeneration" if is_regeneration else "initial"),
-            status="cache_hit",
-            output_selection=selection,
-            model=model,
-            prompt_version=PROMPT_VERSION,
-            analyzer_version=ANALYZER_VERSION,
-            year_month=utc_year_month(),
-            counts_as_project=False,
-            completed_at=datetime.now(timezone.utc),
-        )
-        db.add(hit)
-        db.flush()
-        return hit, draft
+    if not force:
+        cached = find_cached_generation(db, cache_key)
+        if cached and cached.draft_id:
+            draft = db.query(ProjectAiDescriptionDraft).filter_by(id=cached.draft_id).first()
+            kind = (
+                "admin"
+                if admin
+                else ("community" if community else ("regeneration" if is_regeneration else "initial"))
+            )
+            hit = PiGenerationRecord(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                project_id=project_id,
+                snapshot_id=snapshot_id,
+                draft_id=cached.draft_id,
+                idempotency_key=idempotency_key,
+                cache_key=cache_key,
+                kind=kind,
+                status="cache_hit",
+                output_selection=selection,
+                model=model,
+                prompt_version=PROMPT_VERSION,
+                analyzer_version=ANALYZER_VERSION,
+                year_month=utc_year_month(),
+                counts_as_project=False,
+                completed_at=datetime.now(timezone.utc),
+            )
+            db.add(hit)
+            db.flush()
+            return hit, draft
 
     max_in = status["max_input_tokens"]
     max_out = status["max_output_tokens"]
@@ -428,6 +440,7 @@ def reserve_generation(
     month = _month_row(db, user_id)
     counts_as_project = (
         (not community)
+        and (not admin)
         and (not is_regeneration)
         and (not status["project_has_ai"])
     )
@@ -436,10 +449,15 @@ def reserve_generation(
 
     if counts_as_project:
         month.ai_projects_used = int(month.ai_projects_used) + 1
-    if is_regeneration and not community:
+    if is_regeneration and not community and not admin:
         month.regenerations_used = int(month.regenerations_used) + 1
     month.requests_count = int(month.requests_count) + 1
 
+    kind = (
+        "admin"
+        if admin
+        else ("community" if community else ("regeneration" if is_regeneration else "initial"))
+    )
     record = PiGenerationRecord(
         id=uuid.uuid4(),
         user_id=user_id,
@@ -447,7 +465,7 @@ def reserve_generation(
         snapshot_id=snapshot_id,
         idempotency_key=idempotency_key,
         cache_key=cache_key,
-        kind="community" if community else ("regeneration" if is_regeneration else "initial"),
+        kind=kind,
         status="reserved",
         output_selection=selection,
         model=model,
