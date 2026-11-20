@@ -32,6 +32,48 @@ from app.services.project_intelligence.quota import QuotaExceeded, reserve_gener
 from app.services.social import display_name
 
 
+def search_projects(db: Session, *, q: str | None = None, limit: int = 25) -> list[dict]:
+    """Find projects by title, owner email/username, or exact UUID for admin regenerate."""
+    from uuid import UUID as _UUID
+
+    limit = max(1, min(int(limit or 25), 100))
+    term = (q or "").strip()
+    query = (
+        db.query(Project, User, ProjectAiPublication)
+        .join(User, User.id == Project.owner_id)
+        .outerjoin(ProjectAiPublication, ProjectAiPublication.project_id == Project.id)
+    )
+    if term:
+        like = f"%{term}%"
+        try:
+            as_uuid = _UUID(term)
+            query = query.filter(or_(Project.id == as_uuid, Project.title.ilike(like)))
+        except Exception:
+            query = query.filter(
+                or_(
+                    Project.title.ilike(like),
+                    User.email.ilike(like),
+                    User.username.ilike(like),
+                )
+            )
+    rows = query.order_by(Project.updated_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": str(project.id),
+            "title": project.title,
+            "visibility": getattr(project.visibility, "value", str(project.visibility)),
+            "owner_id": str(owner.id),
+            "owner_email": owner.email,
+            "owner_username": owner.username,
+            "has_publication": pub is not None,
+            "quality_status": getattr(pub, "quality_status", None) if pub else None,
+            "publish_simple": bool(pub.publish_simple) if pub else False,
+            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+        }
+        for project, owner, pub in rows
+    ]
+
+
 def list_ai_users(db: Session, *, q: str | None = None, limit: int = 50) -> list[dict]:
     """Users with any PI usage this month or historically, highest spend first."""
     ym = utc_year_month()

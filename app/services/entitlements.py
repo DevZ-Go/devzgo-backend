@@ -1,4 +1,4 @@
-"""Premium entitlement checks. Resume Studio only; never affects match/badge/search ranking."""
+"""Premium entitlement checks. Never affects match/badge/search ranking."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.models.entitlements import Entitlement
 from app.models.user import User
+
+PREMIUM_FEATURES = ("resume_studio", "project_intelligence")
 
 
 def _dev_grant_ids() -> set[str]:
@@ -25,8 +27,21 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt
 
 
+def _is_platform_admin(db: Session, user_id: UUID) -> bool:
+    """Platform admins and the reserved owner email get every premium feature."""
+    from app.models.admin import PlatformAdmin
+    from app.services.platform_admin import is_owner_email
+
+    if db.query(PlatformAdmin.user_id).filter(PlatformAdmin.user_id == user_id).first() is not None:
+        return True
+    user = db.query(User).filter(User.id == user_id).first()
+    return bool(user and is_owner_email(user.email))
+
+
 def has_feature(db: Session, user_id: UUID, feature: str = "resume_studio") -> bool:
     if str(user_id) in _dev_grant_ids():
+        return True
+    if feature in PREMIUM_FEATURES and _is_platform_admin(db, user_id):
         return True
     row = db.query(Entitlement).filter(Entitlement.user_id == user_id, Entitlement.feature == feature).first()
     if not row:
@@ -72,33 +87,73 @@ def revoke(db: Session, user_id: UUID, feature: str = "resume_studio") -> bool:
     return True
 
 
+def grant_premium_bundle(
+    db: Session,
+    user_id: UUID,
+    *,
+    source: str = "admin_grant",
+    granted_by: UUID | None = None,
+    days: int | None = None,
+    features: tuple[str, ...] = PREMIUM_FEATURES,
+) -> list[Entitlement]:
+    """Grant every listed premium feature (Resume Studio + Project Intelligence by default)."""
+    return [
+        grant(db, user_id, feature, source=source, granted_by=granted_by, days=days)
+        for feature in features
+    ]
+
+
+def revoke_premium_bundle(
+    db: Session,
+    user_id: UUID,
+    *,
+    features: tuple[str, ...] = PREMIUM_FEATURES,
+) -> int:
+    removed = 0
+    for feature in features:
+        if revoke(db, user_id, feature):
+            removed += 1
+    return removed
+
+
 def grant_all_developers(
     db: Session,
     *,
-    feature: str = "resume_studio",
+    feature: str | None = None,
     source: str = "admin_grant",
     granted_by: UUID | None = None,
     days: int | None = None,
 ) -> int:
-    """Grant premium to every non-recruiter account. Returns how many rows were upserted."""
-    users = db.query(User).filter(User.is_recruiter.is_(False)).all()
+    """Grant premium to every non-recruiter account. Returns how many user bundles were upserted."""
+    users = db.query(User).filter(User.account_type != "recruiter").all()
+    features = (feature,) if feature else PREMIUM_FEATURES
     count = 0
     for user in users:
-        grant(db, user.id, feature, source=source, granted_by=granted_by, days=days)
+        grant_premium_bundle(
+            db, user.id, source=source, granted_by=granted_by, days=days, features=features
+        )
         count += 1
     return count
 
 
 def list_for_user(db: Session, user_id: UUID) -> list[dict]:
     features = []
-    for feature in ("resume_studio", "project_intelligence"):
+    admin = _is_platform_admin(db, user_id)
+    for feature in PREMIUM_FEATURES:
         row = db.query(Entitlement).filter(Entitlement.user_id == user_id, Entitlement.feature == feature).first()
         active = has_feature(db, user_id, feature)
+        source = None
+        if row:
+            source = row.source
+        elif admin and active:
+            source = "platform_admin"
+        elif str(user_id) in _dev_grant_ids() and active:
+            source = "dev_grant"
         features.append({
             "feature": feature,
             "active": active,
             "expires_at": row.expires_at.isoformat() if row and row.expires_at else None,
-            "source": row.source if row else ("dev_grant" if str(user_id) in _dev_grant_ids() and active else None),
+            "source": source,
         })
     return features
 

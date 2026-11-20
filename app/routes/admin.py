@@ -394,6 +394,19 @@ def grant_pi_premium(
     return {"ok": True, "user_id": str(user.id), "email": user.email, "premium": not revoke}
 
 
+@router.get("/project-intelligence/projects")
+def search_pi_projects(
+    q: str | None = Query(default=None, max_length=160),
+    limit: int = Query(default=25, ge=1, le=100),
+    ctx: AdminContext = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Search projects by title, owner, or UUID for admin AI regenerate."""
+    from app.services.project_intelligence.admin_ops import search_projects
+
+    return {"projects": search_projects(db, q=q, limit=limit)}
+
+
 @router.get("/project-intelligence/users")
 def list_pi_ai_users(
     q: str | None = Query(default=None, max_length=120),

@@ -359,7 +359,7 @@ def reserve_generation(
     force=True: skip successful cache hits (always run a new model call when reserved).
     """
     settings = get_pi_settings(db)
-    if community or admin:
+    if community:
         # Use free-tier token budgets; skip owner package entitlement checks.
         premium = False
         status = {
@@ -370,13 +370,29 @@ def reserve_generation(
             "limit": int(settings["free_project_limit"]),
             "exhausted_message": None,
         }
+    elif admin:
+        # Admin regenerations never burn owner allowance; may request premium fields.
+        want_detailed = bool((selection or {}).get("detailed_description"))
+        premium = want_detailed
+        status = {
+            "premium": premium,
+            "project_has_ai": project_has_successful_ai(db, project_id),
+            "max_input_tokens": int(
+                settings["premium_max_input_tokens"] if premium else settings["free_max_input_tokens"]
+            ),
+            "max_output_tokens": int(
+                settings["premium_max_output_tokens"] if premium else settings["free_max_output_tokens"]
+            ),
+            "limit": int(settings["premium_project_limit"]),
+            "exhausted_message": None,
+        }
     else:
         status = assert_can_generate_package(db, user_id, project_id, is_regeneration=is_regeneration)
         premium = status["premium"]
-    model = pick_model(settings, premium=premium, advanced=advanced and not community and not admin)
-    selection = normalize_outputs(selection, premium=premium and not community and not admin)
-    # Community/admin packages always include simple English + short; never long premium fields
-    if community or admin:
+    model = pick_model(settings, premium=premium, advanced=advanced and not community)
+    selection = normalize_outputs(selection, premium=premium and not community)
+    # Community packages always include simple English + short; never long premium fields
+    if community:
         selection = normalize_outputs({"detailed_description": False}, premium=False)
     cache_key = make_cache_key(
         project_id=project_id,
