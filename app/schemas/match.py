@@ -52,6 +52,7 @@ class MatchRequirement(BaseModel):
     name: str
     importance: Literal["required", "preferred"]
     status: Literal["evidenced", "declared_project", "declared_profile", "missing"]
+    coverage: Literal["supported", "partial", "unknown", "unmet"] = "unknown"
     weight: float
     contribution_linked: bool
     project_count: int
@@ -68,15 +69,21 @@ class MatchResult(BaseModel):
     open_to_work: bool
     work_types: List[str]
     work_arrangements: List[str]
-    percent: int
-    points: float
-    max_points: int
+    # Null when FEATURE_NUMERIC_MATCH is off (default).
+    percent: Optional[int] = None
+    points: Optional[float] = None
+    max_points: Optional[int] = None
+    numeric_match_enabled: bool = False
     required_met: int
     required_total: int
     preferred_met: int
     preferred_total: int
     relevant_projects: int
     contribution_linked: int
+    supported_count: int = 0
+    partial_count: int = 0
+    unknown_count: int = 0
+    unmet_count: int = 0
     requirements: List[MatchRequirement]
 
 
@@ -84,6 +91,7 @@ class MatchResponse(BaseModel):
     required: List[str]
     preferred: List[str]
     formula: str
+    numeric_match_enabled: bool = False
     considered: int
     restricted: int
     results: List[MatchResult]

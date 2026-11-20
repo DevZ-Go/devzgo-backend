@@ -209,6 +209,7 @@ def _github_login(client, monkeypatch, identity):
     monkeypatch.setattr(gh, "fetch_github_identity", lambda code: identity)
     start = client.get("/auth/github/login", follow_redirects=False)
     assert start.status_code == 307 and start.headers["location"].startswith("https://github.com/login/oauth/authorize")
+    assert "prompt=select_account" in start.headers["location"]
     state = start.headers["location"].split("state=")[1].split("&")[0]
     done = client.get(f"/auth/github/callback?code=abc&state={state}", follow_redirects=False)
     return done.headers["location"]
@@ -248,3 +249,16 @@ def test_github_login_links_by_verified_email_and_rejects_bad_state(client, make
                                                 "html_url": None, "email": email})
     assert other.endswith("/login?error=github_linked")
     assert client.get("/auth/github/callback?code=abc&state=forged", follow_redirects=False).headers["location"].endswith("error=github_state")
+
+
+def test_github_cancel_returns_to_sign_in(client, monkeypatch):
+    import app.routes.github_auth as gh
+
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "cid")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(gh, "fetch_github_identity", lambda code: {"id": "1"})
+    start = client.get("/auth/github/login", follow_redirects=False)
+    state = start.headers["location"].split("state=")[1].split("&")[0]
+    denied = client.get(f"/auth/github/callback?error=access_denied&state={state}", follow_redirects=False)
+    assert denied.status_code == 307
+    assert denied.headers["location"].endswith("/login?error=github_cancelled")

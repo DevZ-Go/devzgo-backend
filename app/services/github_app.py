@@ -43,6 +43,8 @@ def authorize_url(state: str) -> str:
         "redirect_uri": callback_url(),
         "state": state,
         "allow_signup": "false",
+        # Show GitHub's account picker so a browser already signed into another account can switch.
+        "prompt": "select_account",
     })
     return f"{AUTHORIZE_URL}?{query}"
 

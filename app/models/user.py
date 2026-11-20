@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, Index, Integer
+from sqlalchemy import Boolean, Column, String, DateTime, Index, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -18,10 +18,16 @@ class User(Base):
     token_version = Column(Integer, nullable=False, server_default="0")
     # "developer" or "recruiter"; fixed at sign-up and never changed by profile edits.
     account_type = Column(String(20), nullable=False, default="developer", server_default="developer")
+    # Existing accounts are grandfathered verified; new password signups set this after OTP.
+    email_verified = Column(Boolean, nullable=False, default=True, server_default="true")
+    welcome_email_sent_at = Column(DateTime(timezone=True), nullable=True)
     # Pause until the next successful sign-in. Scheduled deletion also sets this.
     deactivated_at = Column(DateTime(timezone=True), nullable=True)
     # When set, the account is hidden; signing in before this time cancels deletion. After it, the row is purged.
     delete_after = Column(DateTime(timezone=True), nullable=True)
+    # Admin lock. Signing in does not clear it; an admin has to restore the account.
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+    suspended_reason = Column(String(300), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -37,6 +43,12 @@ class User(Base):
     @property
     def has_password(self) -> bool:
         return self.password_hash is not None
+
+    @property
+    def avatar_url(self) -> str | None:
+        """Uploaded photo, when the profile is already loaded. Avoids a query during response building."""
+        profile = self.__dict__.get("profile")
+        return profile.avatar_url if profile is not None else None
 
     @property
     def username_needs_choice(self) -> bool:

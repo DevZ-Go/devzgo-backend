@@ -16,9 +16,40 @@ from app.models.collaboration import CollaborationRequest, ProjectCollaborator, 
 from app.models.github_history import ProjectCommit, ProjectContributor, ProjectPush
 from app.models.notification import Notification
 from app.models.project_like import ProjectLike
-from app.models.project_comment import ProjectComment
+from app.models.project_comment import ProjectComment, ProjectCommentLike  # noqa: F401
+from app.models.clubs import ClubCustomRole, ClubMember, NetworkClub  # noqa: F401
 from app.models.password_reset import PasswordResetToken
 from app.models.monthly_wrap import MonthlyWrap
 from app.models.recruiting import RecruitmentRequest, Shortlist, ShortlistEntry
 from app.models.challenge import ChallengeInvitation, ChallengeReview, ChallengeSubmission, TechnicalChallenge
 from app.models.workspace import GitHubConnection, WorkspaceAuditEvent, WorkspaceDraft, WorkspaceSyncJob
+from app.models.admin import AdminAuditEvent, AdminInvite, AdminProposal, AdminProposalVote, PlatformAdmin
+from app.models.usage import UsageEvent
+from app.models.email import EmailChangeRequest, EmailDeliveryEvent, EmailOutbox, PendingRegistration
+from app.models.career import (
+    CareerCertification, CareerEducation, CareerExperience, CareerExperienceProject,
+    CareerFieldVisibility, CareerSkillInterval, ResumeExtractedItem, ResumeImportJob,
+)
+from app.models.badges import (
+    AssessmentAchievementRecord, BadgeCriteriaVersion, BadgeDefinition, EarnedBadge, SkillEvidenceRecord,
+)
+from app.models.entitlements import (
+    CandidateEvaluation, ConsentRecord, CareerAuditLog, Entitlement,
+    GeneratedResume, GeneratedResumeVersion, ResumeExport,
+)
+from app.models.project_intelligence import (
+    PiGenerationRecord,
+    PiMonthlyUsage,
+    PiVisitorAiRequest,
+    ProjectAiDescriptionDraft,
+    ProjectAiPublication,
+    ProjectAiUsageLedger,
+    ProjectAnalysisJob,
+    ProjectAnalysisPreference,
+    ProjectEvidenceClaim,
+    ProjectEvidenceRef,
+    ProjectIntelligenceSettings,
+    ProjectPlainInsight,
+    ProjectSourceSnapshot,
+)
+from app.models.platform_settings import PlatformSetting

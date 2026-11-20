@@ -76,6 +76,13 @@ class UserProfileUpdate(UserProfileBase):
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
     notify_challenges: Optional[bool] = None
+    email_notify_connection_requests: Optional[bool] = None
+    email_notify_connection_milestones: Optional[bool] = None
+    email_notify_messages_digest: Optional[bool] = None
+    email_notify_collaborations: Optional[bool] = None
+    email_notify_project_activity: Optional[bool] = None
+    email_notify_recruiter: Optional[bool] = None
+    email_notify_weekly_summary: Optional[bool] = None
     challenge_notices: Optional[Literal["off", "open_to_work", "always"]] = None
     challenge_invites: Optional[Literal["off", "open_to_work", "always"]] = None
     start_page: Optional[Literal["home", "resume"]] = None
@@ -120,6 +127,13 @@ class UserProfileResponse(UserProfileBase):
     notify_messages: Optional[bool] = None
     notify_collaborations: Optional[bool] = None
     notify_challenges: Optional[bool] = None
+    email_notify_connection_requests: Optional[bool] = None
+    email_notify_connection_milestones: Optional[bool] = None
+    email_notify_messages_digest: Optional[bool] = None
+    email_notify_collaborations: Optional[bool] = None
+    email_notify_project_activity: Optional[bool] = None
+    email_notify_recruiter: Optional[bool] = None
+    email_notify_weekly_summary: Optional[bool] = None
     challenge_notices: Optional[str] = None
     challenge_invites: Optional[str] = None
     start_page: Optional[str] = None
@@ -211,6 +225,8 @@ class TalentCard(BaseModel):
     work_types: List[str] = []
     work_arrangements: List[str] = []
     restricted: bool = False
+    visible_badges: List[str] = []
+    experience_categories: List[str] = []
     match: List[str] = []
 
 # ==================== LIKES & COMMENTS ====================
@@ -244,7 +260,7 @@ class ActivityLikeResponse(BaseModel):
 class FeedPostCreate(BaseModel):
     title: ShortText = None
     content: str = Field(min_length=1, max_length=5000)
-    activity_type: Literal["post", "milestone", "collab_call", "project_update", "project_share"] = "post"
+    activity_type: Literal["post", "spark", "milestone", "collab_call", "project_update", "project_share"] = "post"
     project_id: Optional[UUID] = None
     media_url: Link = None
 

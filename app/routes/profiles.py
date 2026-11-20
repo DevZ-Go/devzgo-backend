@@ -48,6 +48,9 @@ OWN_SETTINGS = (
     "connection_visibility", "collaboration_policy", "email_visibility", "resume_visibility",
     "notify_likes", "notify_comments", "notify_shares", "notify_connections",
     "notify_messages", "notify_collaborations", "notify_challenges", "challenge_notices", "challenge_invites", "start_page",
+    "email_notify_connection_requests", "email_notify_connection_milestones",
+    "email_notify_messages_digest", "email_notify_collaborations", "email_notify_project_activity",
+    "email_notify_recruiter", "email_notify_weekly_summary",
 )
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
@@ -266,12 +269,19 @@ def upload_my_resume(
     if too_big:
         raise HTTPException(status_code=413, detail="Resume is larger than 8 MB")
     name = f"{current_user.id}_{uuidlib.uuid4().hex}.pdf"
-    storage.save(f"resumes/{name}", file.file)
+    key = f"resumes/{name}"
+    storage.save(key, file.file)
     profile = current_user.profile
     if profile is None:
         profile = UserProfile(user_id=current_user.id)
         db.add(profile)
     profile.resume_url = f"/storage/resumes/{name}"
+    # Same PDF feeds career import proposals / badge evidence (confirm still required).
+    try:
+        from app.services.portfolio_resume import sync_after_portfolio_upload
+        sync_after_portfolio_upload(db, current_user, key, name)
+    except Exception:
+        pass
     db.commit()
     db.refresh(profile)
     current_user.profile = profile
@@ -320,6 +330,9 @@ def talent(
     open_to_work: bool = Query(False),
     work_type: str = Query("", max_length=20),
     arrangement: str = Query("", max_length=20),
+    badge_family: str = Query("", max_length=40, description="experience | skill_evidence | assessment"),
+    badge_track: str = Query("", max_length=40, description="e.g. bronze, participation, professional"),
+    experience_category: str = Query("", max_length=40, description="Confirmed shared career category"),
     sort: str = Query("relevance"),
     limit: int = Query(30, ge=1, le=50),
     db: Session = Depends(get_db),
@@ -330,11 +343,15 @@ def talent(
         raise HTTPException(status_code=400, detail=f"Sort by one of: {', '.join(SORTS)}")
     if work_type and work_type not in WORK_TYPES or arrangement and arrangement not in WORK_ARRANGEMENTS:
         raise HTTPException(status_code=400, detail="Unknown work type or arrangement")
+    if badge_family and badge_family not in {"experience", "skill_evidence", "assessment"}:
+        raise HTTPException(status_code=400, detail="Unknown badge family")
     needed = [part.strip() for part in tech.split(",") if part.strip()][:10]
     viewer = current_user.id if current_user else None
     filters = TalentQuery(
         query=q.strip(), tech=needed, evidence=evidence, min_projects=min_projects, github=github, source=source,
         open_to_work=open_to_work, work_type=work_type, arrangement=arrangement, sort=sort,
+        badge_family=badge_family.strip(), badge_track=badge_track.strip(),
+        experience_category=experience_category.strip(),
     )
     return talent_board(db, viewer, filters, limit)
 

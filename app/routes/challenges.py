@@ -381,6 +381,9 @@ def save_review(challenge_id: UUID, submission_id: UUID, data: ReviewIn, db: Ses
         review.status = "draft"
         sub.status = "in_review"
     db.commit()
+    if data.release:
+        from app.services.badge_engine import recalculate_for_user
+        recalculate_for_user(db, sub.developer_id)
     db.refresh(sub)
     return _submission_out(sub, for_developer=False)
 

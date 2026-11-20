@@ -9,6 +9,7 @@ from uuid import UUID
 
 from app.db.session import get_db
 from app.models.file import File as FileRecord
+from app.models.collaboration import ProjectCollaborator
 from app.models.project import Project
 from app.models.techstack import TechStack
 from app.models.enums import ProjectCategory, ProjectVisibility
@@ -19,6 +20,7 @@ from app.schemas.project import (
     ProjectFileEntry,
     ProjectLikeResponse,
     ProjectResponse,
+    ProjectTeamMemberOut,
 )
 from app.core.dependencies import get_current_user, get_current_user_optional, require_developer
 from app.models.user import User
@@ -50,8 +52,43 @@ from app.services.workspace_files import (
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
-# Project cards read every project's tech stacks and owner; load them in one batch, not one query per card.
-CARD_LOADS = (selectinload(Project.tech_stacks), joinedload(Project.owner))
+# Project cards read tech stacks, owner, and collaborators in batch (not one query per card).
+CARD_LOADS = (
+    selectinload(Project.tech_stacks),
+    joinedload(Project.owner).joinedload(User.profile),
+    selectinload(Project.collaborators)
+    .joinedload(ProjectCollaborator.user)
+    .joinedload(User.profile),
+)
+
+
+def _card_team(project: Project) -> list[ProjectTeamMemberOut]:
+    owner = project.owner
+    team = [
+        ProjectTeamMemberOut(
+            user_id=project.owner_id,
+            username=owner.username if owner else "developer",
+            full_name=display_name(owner) if owner else None,
+            avatar_url=owner.profile.avatar_url if owner and owner.profile else None,
+            role="Owner",
+            is_owner=True,
+        )
+    ]
+    for row in project.collaborators or []:
+        user = row.user
+        if not user:
+            continue
+        team.append(
+            ProjectTeamMemberOut(
+                user_id=row.user_id,
+                username=user.username,
+                full_name=display_name(user),
+                avatar_url=user.profile.avatar_url if user.profile else None,
+                role=(row.role or "Collaborator")[:100],
+                is_owner=False,
+            )
+        )
+    return team
 
 
 # ---------------- CREATE PROJECT ----------------
@@ -733,6 +770,8 @@ def build_project_response(
         created_at=project.created_at,
         updated_at=project.updated_at,
         owner_username=owner_username,
+        owner_avatar_url=project.owner.profile.avatar_url if project.owner and project.owner.profile else None,
+        team=_card_team(project),
         tech_stacks=[tech.name for tech in project.tech_stacks],
         tech_stack_ids=[tech.id for tech in project.tech_stacks],
         languages=languages,

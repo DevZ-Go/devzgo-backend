@@ -121,18 +121,36 @@ def test_ranking_uses_visible_evidence_and_explains_each_requirement(client, mak
     db.close()
 
     body = client.post("/recruiting/match", headers=recruiter, json={"required": [tag], "preferred": ["react"]}).json()
-    assert body["required"] == [tag] and body["preferred"] == ["React"] and "twice" in body["formula"]
+    assert body["required"] == [tag] and body["preferred"] == ["React"]
+    assert body["numeric_match_enabled"] is False
+    assert "disabled until formal validation" in body["formula"]
     top = _result(body, evidenced_id)
-    assert top["percent"] == 100 and top["required_met"] == 1 and top["preferred_met"] == 1
+    assert top["percent"] is None and top["points"] is None and top["max_points"] is None
+    assert top["required_met"] == 1 and top["preferred_met"] == 1
+    assert top["supported_count"] >= 1
     req = next(r for r in top["requirements"] if r["name"] == tag)
-    assert req["status"] == "evidenced" and req["projects"][0]["title"] == "Shop"
+    assert req["status"] == "evidenced" and req["coverage"] == "supported"
+    assert req["projects"][0]["title"] == "Shop"
 
     second = _result(body, declared_id)
-    assert second["percent"] == 50 and {r["status"] for r in second["requirements"]} == {"declared_project"}
+    assert second["percent"] is None
+    assert {r["status"] for r in second["requirements"]} == {"declared_project"}
+    assert {r["coverage"] for r in second["requirements"]} == {"partial"}
     ids = [r["id"] for r in body["results"]]
     assert ids.index(evidenced_id) < ids.index(declared_id)
     assert _result(body, profile_only_id) is None  # a profile skill alone earns nothing
     assert _result(body, hidden_id) is None  # private projects never count
+
+    # Numeric coverage only when the validation flag is on.
+    import os
+    os.environ["FEATURE_NUMERIC_MATCH"] = "true"
+    try:
+        scored = client.post("/recruiting/match", headers=recruiter, json={"required": [tag], "preferred": ["react"]}).json()
+        assert scored["numeric_match_enabled"] is True
+        scored_top = _result(scored, evidenced_id)
+        assert scored_top["percent"] == 100
+    finally:
+        os.environ.pop("FEATURE_NUMERIC_MATCH", None)
 
     strict = client.post("/recruiting/match", headers=recruiter, json={
         "required": [tag], "preferred": [], "require_all_required": True, "min_relevant_projects": 1}).json()

@@ -210,5 +210,16 @@ def test_editing_stays_disabled_until_the_app_is_configured(client, make_user, m
     monkeypatch.setenv("GITHUB_APP_SLUG", "devzgo")
     res = client.post("/github/connection/authorize", headers=owner)
     assert res.status_code == 200, res.text
-    assert res.json()["url"].startswith("https://github.com/login/oauth/authorize")
-    assert res.cookies.get("gh_app_state")
+    from urllib.parse import parse_qs, urlparse
+
+    start = urlparse(res.json()["url"])
+    assert start.path == "/github/connection/begin"
+    ticket = parse_qs(start.query)["ticket"][0]
+    assert res.cookies.get("gh_app_state") is None
+    begin = client.get("/github/connection/begin", params={"ticket": ticket}, follow_redirects=False)
+    assert begin.status_code == 302
+    assert begin.headers["location"].startswith("https://github.com/login/oauth/authorize")
+    assert "prompt=select_account" in begin.headers["location"]
+    assert "redirect_uri=" in begin.headers["location"]
+    assert begin.cookies.get("gh_app_state")
+    assert client.get("/github/connection/begin", params={"ticket": "nope"}, follow_redirects=False).status_code == 307

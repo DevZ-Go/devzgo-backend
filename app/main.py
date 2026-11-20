@@ -51,6 +51,16 @@ from app.routes.file_preview import router as file_preview_router
 from app.routes.github_connection import callback_router as github_app_callback_router
 from app.routes.github_connection import router as github_connection_router
 from app.routes.workspace import router as workspace_router
+from app.routes.admin import router as admin_router
+from app.routes.usage import router as usage_router
+from app.routes.email_hooks import router as email_hooks_router
+from app.routes.career import router as career_router
+from app.routes.career_imports import router as career_imports_router
+from app.routes.badges import router as badges_router
+from app.routes.resume_studio import router as resume_studio_router
+from app.routes.evaluations import router as evaluations_router
+from app.routes.project_intelligence import router as project_intelligence_router
+from app.routes.clubs import router as clubs_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -112,13 +122,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Public media only: covers, videos, and profile photos. Do not expose storage/project_<uuid>/.
+# Public media only: covers, videos, profile photos, club art. Do not expose storage/project_<uuid>/.
+_PUBLIC_MEDIA_KINDS = ("covers", "videos", "avatars", "resumes", "club-banners", "club-avatars")
 if storage.is_s3():
     @app.get("/storage/{kind}/{name}", include_in_schema=False)
-    def media_redirect(kind: Literal["covers", "videos", "avatars", "resumes"], name: str):
+    def media_redirect(
+        kind: Literal["covers", "videos", "avatars", "resumes", "club-banners", "club-avatars"],
+        name: str,
+    ):
         return RedirectResponse(storage.url(f"{kind}/{name}"))
 else:
-    for kind in ("covers", "videos", "avatars", "resumes"):
+    for kind in _PUBLIC_MEDIA_KINDS:
         (storage.ROOT / kind).mkdir(parents=True, exist_ok=True)
         app.mount(f"/storage/{kind}", StaticFiles(directory=str(storage.ROOT / kind)), name=f"storage_{kind}")
 app.include_router(media_router)
@@ -151,6 +165,16 @@ app.include_router(file_preview_router)
 app.include_router(github_connection_router)
 app.include_router(github_app_callback_router)
 app.include_router(workspace_router)
+app.include_router(admin_router)
+app.include_router(usage_router)
+app.include_router(email_hooks_router)
+app.include_router(career_router)
+app.include_router(career_imports_router)
+app.include_router(badges_router)
+app.include_router(resume_studio_router)
+app.include_router(evaluations_router)
+app.include_router(project_intelligence_router)
+app.include_router(clubs_router)
 
 
 def _sweep_workspace() -> None:

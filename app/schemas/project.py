@@ -116,6 +116,16 @@ class ProjectSource(BaseModel):
     sync_updated_at: Optional[datetime] = None
 
 
+class ProjectTeamMemberOut(BaseModel):
+    """Lightweight team row for project cards (owner first, then collaborators)."""
+    user_id: UUID
+    username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    role: str = "Collaborator"
+    is_owner: bool = False
+
+
 class ProjectResponse(BaseModel):
     id: UUID
     owner_id: UUID
@@ -139,6 +149,8 @@ class ProjectResponse(BaseModel):
     updated_at: datetime
 
     owner_username: str
+    owner_avatar_url: Optional[str] = None
+    team: List[ProjectTeamMemberOut] = []
     tech_stacks: List[str] = []
     tech_stack_ids: List[int] = []
     languages: List[LanguageStat] = []
@@ -162,15 +174,28 @@ class ProjectLikeResponse(BaseModel):
 
 class ProjectCommentCreate(BaseModel):
     body: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+    parent_id: Optional[UUID] = None
 
 class ProjectCommentResponse(BaseModel):
     id: UUID
     project_id: UUID
+    parent_id: Optional[UUID] = None
     body: str
     created_at: datetime
     author: ConnectionUserSummary
     can_delete: bool
+    likes_count: int = 0
+    is_liked: bool = False
+    replies: List["ProjectCommentResponse"] = []
 
 class ProjectCommentPage(BaseModel):
     items: List[ProjectCommentResponse]
     next_page: Optional[str] = None
+
+class ProjectCommentLikeResponse(BaseModel):
+    comment_id: UUID
+    likes_count: int
+    is_liked: bool
+
+
+ProjectCommentResponse.model_rebuild()

@@ -5,6 +5,8 @@ __pycache__/
 .pytest_cache/
 .env
 .env.local
+# Optional private local compose extras (secrets). The committed docker-compose.local.yml has none.
+docker-compose.local.override.yml
 .DS_Store
 storage/
 *.egg-info/

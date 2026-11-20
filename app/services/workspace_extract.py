@@ -13,8 +13,9 @@ from pathlib import Path
 from fastapi import HTTPException
 
 # Student-project friendly limits (zip bombs / DoS).
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB compressed upload
-MAX_EXTRACTED_BYTES = 200 * 1024 * 1024  # 200 MiB uncompressed
+# Capstone ZIPs often include assets; keep extracted/file caps as the hard safety net.
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MiB compressed upload
+MAX_EXTRACTED_BYTES = 800 * 1024 * 1024  # 800 MiB uncompressed
 MAX_FILE_COUNT = 5_000
 
 # Added by the OS when zipping, not by the author: Finder's __MACOSX folder and ._ metadata twins, plus folder caches.

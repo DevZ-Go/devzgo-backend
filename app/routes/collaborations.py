@@ -214,8 +214,15 @@ def submit_collaboration_request(project_id: UUID, data: CollaborationRequestCre
     req = CollaborationRequest(project_id=project_id, requester_id=me.id, project_owner_id=project.owner_id,
                                message=data.message, role=data.role, status="pending")
     db.add(req)
-    notify(db, project.owner_id, me, "collaboration_request", str(project.id),
-           f"{display_name(me)} requested to collaborate on \"{project.title}\" as {data.role}.")
+    db.flush()
+    notify(
+        db,
+        project.owner_id,
+        me,
+        "collaboration_request",
+        f"{project.id}:{req.id}",
+        f"{display_name(me)} requested to collaborate on \"{project.title}\" as {data.role}.",
+    )
     _commit(db, "request_pending", "Collaboration request already pending")
     db.refresh(req)
     return _request_view(req)
@@ -335,8 +342,15 @@ def invite_collaborator(project_id: UUID, data: InvitationCreate, db: Session = 
                             message=data.message, expires_at=_now() + INVITE_TTL)
     apply_access(inv, access)
     db.add(inv)
-    notify(db, invitee.id, me, "collaboration_invitation", str(project_id),
-           f"{display_name(me)} invited you to collaborate on \"{project.title}\" as {data.role}.")
+    db.flush()
+    notify(
+        db,
+        invitee.id,
+        me,
+        "collaboration_invitation",
+        f"{project_id}:{inv.id}",
+        f"{display_name(me)} invited you to collaborate on \"{project.title}\" as {data.role}.",
+    )
     _commit(db, "invitation_pending", "This developer already has a pending invitation")
     db.refresh(inv)
     return _invitation_view(inv)

@@ -43,6 +43,24 @@ class ResetPasswordRequest(BaseModel):
     token: str = Field(min_length=10, max_length=200)
     new_password: Password
 
+
+class VerifyEmailRequest(BaseModel):
+    pending_id: UUID
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class ResendVerificationRequest(BaseModel):
+    pending_id: UUID
+
+
+class EmailChangeRequestBody(BaseModel):
+    new_email: EmailStr
+
+
+class EmailChangeConfirmBody(BaseModel):
+    request_id: UUID
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
 class ChangePasswordRequest(BaseModel):
     current_password: Optional[str] = Field(default=None, max_length=128)  # omitted when setting a first password
     new_password: Password
@@ -52,6 +70,8 @@ class GitHubCompleteRequest(BaseModel):
     username: Username
     role: Optional[str] = Field(default=None, max_length=40)
     company: Optional[str] = Field(default=None, max_length=120)
+    # Required when GitHub did not provide a verified primary email.
+    email: Optional[EmailStr] = None
 
 class UsernameAvailability(BaseModel):
     username: str
@@ -81,8 +101,13 @@ class UserResponse(BaseModel):
     has_password: bool = True
     username_needs_choice: bool = False
     account_type: str = "developer"
+    email_verified: bool = True
     deactivated_at: Optional[datetime] = None
     delete_after: Optional[datetime] = None
+    suspended_at: Optional[datetime] = None
+    is_platform_admin: bool = False
+    admin_role: Optional[str] = None
+    avatar_url: Optional[str] = None
 
     class Config:
         from_attributes = True
