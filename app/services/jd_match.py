@@ -29,6 +29,7 @@ from app.models.user import User
 from app.services.github_history import credit
 from app.services.skill_matrix import detected_names, hidden_only_names, profile_skill_names, project_skills
 from app.services.social import profile_open_to, public_project_filter
+from app.core.feature_flags import numeric_match_enabled
 from app.services.tech_catalog import (
     AMBIGUOUS,
     AMBIGUOUS_TARGET,
@@ -39,15 +40,32 @@ from app.services.tech_catalog import (
     term_pattern,
 )
 
+# Explainable coverage labels (numeric percent stays behind FEATURE_NUMERIC_MATCH).
+COVERAGE_STATUS = {
+    "evidenced": "supported",
+    "declared_project": "partial",
+    "resume_claim": "partial",
+    "work_history_claim": "partial",
+    "declared_profile": "unknown",
+    "missing": "unmet",
+}
+
 MAX_TEXT = 20_000
 MAX_TERMS = 25
 EXCERPT = 140
 FORMULA = (
-    "Required technologies count twice and preferred ones once. Evidence detected in the source of a project you can "
-    "see earns full credit; a technology the developer added to a project without it being detected earns half; a "
-    "profile skill alone earns none. Likes, followers and commit volume are not used."
+    "Required technologies count twice and preferred ones once. Contribution-linked project evidence earns full credit; "
+    "a declared project tech, confirmed resume skill, or confirmed work-history skill earns partial credit; a profile "
+    "skill alone stays unknown. Likes, followers and commit volume are not used."
 )
-WEIGHTS = {"evidenced": 1.0, "declared_project": 0.5, "declared_profile": 0.0, "missing": 0.0}
+WEIGHTS = {
+    "evidenced": 1.0,
+    "declared_project": 0.5,
+    "resume_claim": 0.35,
+    "work_history_claim": 0.45,
+    "declared_profile": 0.0,
+    "missing": 0.0,
+}
 
 REQUIRED_HEADING = re.compile(
     r"requir|must|qualif|essential|minimum|what you.?ll need|you have|you bring|looking for|skills|experience", re.I)
@@ -195,6 +213,49 @@ def _list(value: str | None) -> list[str]:
     return [part for part in (value or "").split(",") if part]
 
 
+def _authorized_skill_claims(
+    db: Session, user_ids: list[UUID], viewer_id: UUID,
+) -> tuple[dict[UUID, set[str]], dict[UUID, set[str]]]:
+    """Resume / work-history skill claims the viewer is allowed to see (never private)."""
+    resume: dict[UUID, set[str]] = defaultdict(set)
+    work: dict[UUID, set[str]] = defaultdict(set)
+    if not user_ids:
+        return resume, work
+    try:
+        from app.models.badges import SkillEvidenceRecord
+        from app.models.techstack import TechStack
+        from app.models.user import User as UserModel
+        from app.services.career_privacy import viewer_can_see
+    except Exception:
+        return resume, work
+
+    rows = (
+        db.query(SkillEvidenceRecord, TechStack, UserModel)
+        .join(TechStack, TechStack.id == SkillEvidenceRecord.tech_stack_id)
+        .join(UserModel, UserModel.id == SkillEvidenceRecord.user_id)
+        .filter(
+            SkillEvidenceRecord.user_id.in_(user_ids),
+            SkillEvidenceRecord.invalidated.is_(False),
+            SkillEvidenceRecord.review_state == "confirmed",
+            SkillEvidenceRecord.evidence_class.in_(("resume_claim", "work_history_claim")),
+            SkillEvidenceRecord.audience != "private",
+        )
+        .all()
+    )
+    viewer = db.query(UserModel).filter(UserModel.id == viewer_id).first()
+    for evidence, tech, owner in rows:
+        if not viewer_can_see(db, owner=owner, viewer=viewer, audience=evidence.audience or "connections"):
+            continue
+        name = (tech.name or "").strip().lower()
+        if not name:
+            continue
+        if evidence.evidence_class == "resume_claim":
+            resume[owner.id].add(name)
+        else:
+            work[owner.id].add(name)
+    return resume, work
+
+
 def _clean(names: list[str]) -> list[str]:
     """Trimmed, de-duplicated names, with common spellings mapped to catalog names (postgres -> PostgreSQL)."""
     out: list[str] = []
@@ -235,6 +296,7 @@ def match(db: Session, viewer_id: UUID, required: list[str], preferred: list[str
     ).all()
 
     hidden = hidden_only_names(db, [p.id for p in people], public)
+    resume_skills, work_skills = _authorized_skill_claims(db, [p.id for p in people], viewer_id)
     results, restricted = [], 0
     for person in people:
         if not profile_open_to(db, person.id, viewer_id):
@@ -256,6 +318,8 @@ def match(db: Session, viewer_id: UUID, required: list[str], preferred: list[str
         projects = by_person.get(person.id, [])
         commits_in = {pid: per["commits"] for pid, per in credited.get(person.id, {}).get("projects", {}).items()}
         profile_skills = set(profile_skill_names(profile.skills if profile else None)) - hidden.get(person.id, set())
+        person_resume = resume_skills.get(person.id, set())
+        person_work = work_skills.get(person.id, set())
 
         rows, points, relevant = [], 0.0, set()
         for name, importance in wanted:
@@ -275,26 +339,41 @@ def match(db: Session, viewer_id: UUID, required: list[str], preferred: list[str
                 status = "evidenced"
             elif support:
                 status = "declared_project"
+            elif key in person_work:
+                status = "work_history_claim"
+            elif key in person_resume:
+                status = "resume_claim"
             elif key in profile_skills:
                 status = "declared_profile"
             else:
                 status = "missing"
             weight = WEIGHTS[status]
             points += weight * (2 if importance == "required" else 1)
+            evidence_notes = []
+            if status == "work_history_claim":
+                evidence_notes.append("Confirmed on shared work history")
+            elif status == "resume_claim":
+                evidence_notes.append("Confirmed from shared resume import")
             rows.append({
-                "name": name, "importance": importance, "status": status, "weight": weight,
+                "name": name, "importance": importance, "status": status,
+                "coverage": COVERAGE_STATUS[status], "weight": weight,
                 "contribution_linked": any(s["detected"] and s["commits"] for s in support),
                 "projects": support[:3], "project_count": len(support),
+                "evidence_notes": evidence_notes,
             })
 
         required_met = sum(1 for r in rows if r["importance"] == "required" and r["status"] == "evidenced")
         if points <= 0:
             continue
         if filters.require_all_required and any(
-                r["importance"] == "required" and r["status"] in ("missing", "declared_profile") for r in rows):
+                r["importance"] == "required" and r["status"] in ("missing", "declared_profile")
+                for r in rows):
+            # Resume / work-history claims count as partial evidence and pass this gate.
             continue
         if len(relevant) < filters.min_relevant_projects:
             continue
+        show_numeric = numeric_match_enabled()
+        percent = math.floor(points / max_points * 100 + 0.5) if max_points else 0
         results.append({
             "id": person.id,
             "username": person.username,
@@ -305,24 +384,37 @@ def match(db: Session, viewer_id: UUID, required: list[str], preferred: list[str
             "open_to_work": open_to_work,
             "work_types": work_types,
             "work_arrangements": arrangements,
-            "percent": math.floor(points / max_points * 100 + 0.5) if max_points else 0,
-            "points": round(points, 1),
-            "max_points": max_points,
+            # Percent/points only when FEATURE_NUMERIC_MATCH=true (validation gate).
+            "percent": percent if show_numeric else None,
+            "points": round(points, 1) if show_numeric else None,
+            "max_points": max_points if show_numeric else None,
+            "numeric_match_enabled": show_numeric,
             "required_met": required_met,
             "required_total": len(required),
             "preferred_met": sum(1 for r in rows if r["importance"] == "preferred" and r["status"] == "evidenced"),
             "preferred_total": len(preferred),
             "relevant_projects": len(relevant),
             "contribution_linked": sum(1 for r in rows if r["contribution_linked"]),
+            "supported_count": sum(1 for r in rows if r["coverage"] == "supported"),
+            "partial_count": sum(1 for r in rows if r["coverage"] == "partial"),
+            "unknown_count": sum(1 for r in rows if r["coverage"] == "unknown"),
+            "unmet_count": sum(1 for r in rows if r["coverage"] == "unmet"),
             "requirements": rows,
         })
 
-    results.sort(key=lambda r: (-r["points"], -r["required_met"], -r["relevant_projects"],
-                                -r["contribution_linked"], r["username"].lower()))
+    # Sort by explainable evidence strength even when percent is hidden.
+    results.sort(key=lambda r: (
+        -r["required_met"], -r["supported_count"], -r["partial_count"],
+        -r["relevant_projects"], -r["contribution_linked"], r["username"].lower(),
+    ))
     return {
         "required": required,
         "preferred": preferred,
-        "formula": FORMULA,
+        "formula": FORMULA if numeric_match_enabled() else (
+            "Each requirement is labeled supported, partial, unknown, or unmet from evidence you are "
+            "allowed to see. A numeric coverage percentage is disabled until formal validation."
+        ),
+        "numeric_match_enabled": numeric_match_enabled(),
         "considered": len(people) - restricted,
         "restricted": restricted,
         "results": results[:limit],

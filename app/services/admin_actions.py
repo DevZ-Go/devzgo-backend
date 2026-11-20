@@ -834,6 +834,123 @@ class RevokeAdmin:
         return f"Removed admin access from {user.email}"
 
 
+def _premium_days(payload: dict) -> int | None:
+    raw = payload.get("days")
+    if raw is None or raw == "" or str(raw).lower() in {"0", "forever", "none", "null"}:
+        return None
+    try:
+        days = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="days must be a whole number, or leave it blank for no expiry") from exc
+    if days < 1 or days > 3650:
+        raise HTTPException(status_code=400, detail="days must be between 1 and 3650")
+    return days
+
+
+def _notify_premium_granted(db: Session, user: User, days: int | None) -> None:
+    from app.services import email_service
+    if not user.email:
+        return
+    expires_label = f"for {days} day{'s' if days != 1 else ''}" if days else "with no set end date"
+    outbox = email_service.enqueue(
+        db,
+        event_type="premium_granted",
+        template="premium_granted",
+        to_email=user.email,
+        context={"username": user.username, "days": days, "expires_label": expires_label},
+        idempotency_key=f"premium_granted:{user.id}:{days or 'forever'}:{_now().date().isoformat()}",
+    )
+    email_service.try_send_now(db, outbox)
+
+
+class GrantPremium(UserAction):
+    key, label = "premium.grant", "Grant Resume Studio Premium"
+    severity = "important"
+    warning = (
+        "This unlocks Resume Studio generate/export for this developer. "
+        "It does not change matching, badges, or search ranking. Optional days set an expiry; they get an email when it ends."
+    )
+
+    def prepare(self, db, actor, user, payload):
+        if user.is_recruiter:
+            return "Premium Resume Studio is for developer accounts."
+        _premium_days(payload)
+        return None
+
+    def summary(self, user, payload):
+        days = None
+        try:
+            days = _premium_days(payload)
+        except HTTPException:
+            pass
+        if days:
+            return f"Grant Resume Studio Premium to {user.email} for {days} days"
+        return f"Grant Resume Studio Premium to {user.email} with no expiry"
+
+    def apply(self, db, actor, user, payload):
+        from app.services.entitlements import grant
+        days = _premium_days(payload)
+        grant(db, user.id, "resume_studio", source="admin_grant", granted_by=actor.id, days=days)
+        _notify_premium_granted(db, user, days)
+        if days:
+            return f"Granted Resume Studio Premium to {user.email} for {days} days"
+        return f"Granted Resume Studio Premium to {user.email} with no expiry"
+
+
+class RevokePremium(UserAction):
+    key, label = "premium.revoke", "Revoke Resume Studio Premium"
+    severity = "important"
+    warning = "This removes Premium Resume Studio access. Free resume import and badges stay available."
+
+    def prepare(self, db, actor, user, payload):
+        from app.models.entitlements import Entitlement
+        if not db.query(Entitlement).filter(Entitlement.user_id == user.id, Entitlement.feature == "resume_studio").first():
+            return "This person does not have a Resume Studio entitlement row."
+        return None
+
+    def summary(self, user, payload):
+        return f"Revoke Resume Studio Premium from {user.email}"
+
+    def apply(self, db, actor, user, payload):
+        from app.services.entitlements import revoke
+        revoke(db, user.id, "resume_studio")
+        return f"Revoked Resume Studio Premium from {user.email}"
+
+
+class GrantPremiumAll:
+    key, label, severity = "premium.grant_all", "Grant Premium to all developers", "critical"
+    warning = (
+        "This grants Resume Studio Premium to every developer account. "
+        "Optional days apply the same expiry to everyone. Matching and badges are unchanged."
+    )
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        days = _premium_days(payload)
+        count = db.query(User).filter(User.is_recruiter.is_(False)).count()
+        summary = (
+            f"Grant Resume Studio Premium to all {count} developers for {days} days"
+            if days else f"Grant Resume Studio Premium to all {count} developers with no expiry"
+        )
+        preview = Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label='Type GRANT PREMIUM ALL to confirm', typed_value="GRANT PREMIUM ALL", casefold=False,
+            summary=summary,
+        )
+        return _quorum(db, actor, preview, None)
+
+    def run(self, db, actor, target_id, payload) -> str:
+        from app.services.entitlements import grant_all_developers
+        days = _premium_days(payload)
+        count = grant_all_developers(db, source="admin_grant", granted_by=actor.id, days=days)
+        developers = db.query(User).filter(User.is_recruiter.is_(False), User.email.isnot(None)).limit(500).all()
+        for user in developers:
+            _notify_premium_granted(db, user, days)
+        _flush(db)
+        if days:
+            return f"Granted Resume Studio Premium to {count} developers for {days} days"
+        return f"Granted Resume Studio Premium to {count} developers with no expiry"
+
+
 class RecordDelete:
     key = "record.delete"
 
@@ -891,7 +1008,9 @@ ACTIONS = {
         UpdateUsername(), UpdateEmail(), ScheduleDelete(), PurgeUser(), ChangeType(),
         SetVisibility(), ProjectComments(), ProjectLikes(), ProjectEdit(), ProjectDelete(),
         ChallengeStatus(), ChallengeDelete(), GithubDisconnect(),
-        GrantAdmin(), RevokeInvite(), RevokeAdmin(), RecordDelete(),
+        GrantAdmin(), RevokeInvite(), RevokeAdmin(),
+        GrantPremium(), RevokePremium(), GrantPremiumAll(),
+        RecordDelete(),
     )
 }
 

@@ -4,7 +4,14 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-EvidenceClass = Literal["contribution_linked", "detected", "declared"]
+EvidenceClass = Literal[
+    "contribution_linked",
+    "assessment_reviewed",
+    "work_history_claim",
+    "resume_claim",
+    "detected",
+    "declared",
+]
 CheckStatus = Literal["found", "not_detected", "not_assessed", "needs_review"]
 
 
@@ -49,9 +56,12 @@ class SkillCategory(BaseModel):
 
 class SkillTotals(BaseModel):
     skills: int
-    contribution_linked: int
-    detected: int
-    declared: int
+    contribution_linked: int = 0
+    assessment_reviewed: int = 0
+    work_history_claim: int = 0
+    resume_claim: int = 0
+    detected: int = 0
+    declared: int = 0
 
 
 class SkillMatrix(BaseModel):

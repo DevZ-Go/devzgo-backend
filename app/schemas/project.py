@@ -116,6 +116,16 @@ class ProjectSource(BaseModel):
     sync_updated_at: Optional[datetime] = None
 
 
+class ProjectTeamMemberOut(BaseModel):
+    """Lightweight team row for project cards (owner first, then collaborators)."""
+    user_id: UUID
+    username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    role: str = "Collaborator"
+    is_owner: bool = False
+
+
 class ProjectResponse(BaseModel):
     id: UUID
     owner_id: UUID
@@ -140,6 +150,7 @@ class ProjectResponse(BaseModel):
 
     owner_username: str
     owner_avatar_url: Optional[str] = None
+    team: List[ProjectTeamMemberOut] = []
     tech_stacks: List[str] = []
     tech_stack_ids: List[int] = []
     languages: List[LanguageStat] = []

@@ -234,6 +234,36 @@ def render_template(name: str, ctx: dict[str, Any]) -> tuple[str, str, str]:
         text = render_text(title=subject, lines=[str(ctx.get("summary") or "")])
         return subject, html, text
 
+    if name == "premium_granted":
+        days = ctx.get("days")
+        when = escape(str(ctx.get("expires_label") or ("for a limited time" if days else "with no set end date")))
+        subject = "Resume Studio Premium is active on DevZ-Go"
+        html = render_email(
+            preheader="You can generate and export resumes from confirmed career data.",
+            title="Premium access",
+            body_html=_p(f"Hi {username}, an admin enabled Resume Studio Premium on your DevZ-Go account.")
+            + _p(f"Access is active {when}. Premium does not change recruiter matching or badge eligibility.")
+            + _p("You will receive another email when this access ends."),
+            cta_label="Open Resume Studio",
+            cta_url=site_url("/career/studio"),
+        )
+        text = render_text(title=subject, lines=[f"Hi {username}, Resume Studio Premium is active {when}."])
+        return subject, html, text
+
+    if name == "premium_expired":
+        subject = "Your DevZ-Go Resume Studio Premium access ended"
+        html = render_email(
+            preheader="Free resume import and badges stay available.",
+            title="Premium ended",
+            body_html=_p(f"Hi {username}, your Resume Studio Premium access on DevZ-Go has ended.")
+            + _p("You can still import resumes, edit career history, and earn badges. Resume generation and export require Premium again.")
+            + _p("Ask a platform admin if you need another grant."),
+            cta_label="Open career profile",
+            cta_url=site_url("/profile?tab=badges"),
+        )
+        text = render_text(title=subject, lines=[f"Hi {username}, your Resume Studio Premium access has ended."])
+        return subject, html, text
+
     raise ValueError(f"Unknown email template: {name}")
 
 

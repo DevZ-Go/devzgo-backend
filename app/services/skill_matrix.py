@@ -27,7 +27,20 @@ from app.services.tech_catalog import CATEGORIES, KNOWN_NAMES, category_of
 
 PROJECTS_PER_SKILL = 20
 FILES_PER_PROJECT = 4
-CLASS_ORDER = ("contribution_linked", "detected", "declared")
+# Legacy matrix classes plus Talent Intelligence provenance classes (additive).
+CLASS_ORDER = (
+    "contribution_linked",
+    "assessment_reviewed",
+    "work_history_claim",
+    "resume_claim",
+    "detected",
+    "declared",
+)
+MATRIX_TO_PROVENANCE = {
+    "contribution_linked": "contribution_linked",
+    "detected": "project_detection",
+    "declared": "user_declaration",
+}
 
 
 def _value(enum_or_str) -> str:
@@ -169,23 +182,60 @@ def skill_matrix(db: Session, subject: User, viewer_id: UUID | None) -> dict:
                 skills.setdefault(key, {"name": name, "rows": [], "profile": False})
                 skills[key]["profile"] = True
 
+    # Optional provenance rows (resume / work history / assessments). Private sources stay out for other viewers.
+    provenance: dict[str, set[str]] = {}
+    try:
+        from app.models.badges import SkillEvidenceRecord
+        from app.models.techstack import TechStack
+
+        own = viewer_id == subject.id
+        evidence_rows = (
+            db.query(SkillEvidenceRecord, TechStack)
+            .join(TechStack, TechStack.id == SkillEvidenceRecord.tech_stack_id)
+            .filter(
+                SkillEvidenceRecord.user_id == subject.id,
+                SkillEvidenceRecord.invalidated.is_(False),
+                SkillEvidenceRecord.review_state == "confirmed",
+            )
+            .all()
+        )
+        for record, tech in evidence_rows:
+            if not own and record.audience == "private":
+                continue
+            if not own and record.audience == "recruiters":
+                continue  # recruiters use talent/match paths; public matrix stays conservative
+            key = tech.name.lower()
+            skills.setdefault(key, {"name": tech.name, "rows": [], "profile": False})
+            provenance.setdefault(key, set()).add(record.evidence_class)
+    except Exception:
+        provenance = {}
+
     groups: dict[str, list[dict]] = {key: [] for key, _ in CATEGORIES}
     totals = dict.fromkeys(CLASS_ORDER, 0)
-    for skill in skills.values():
+    for key, skill in skills.items():
         rows = sorted(skill["rows"], key=lambda r: (not r["detected"], -r["commits"], r["title"].lower()))
         detected = [r for r in rows if r["detected"]]
         classes = []
         if any(r["commits"] for r in detected):
             classes.append("contribution_linked")
+        if "assessment_reviewed" in provenance.get(key, set()):
+            classes.append("assessment_reviewed")
+        if "work_history_claim" in provenance.get(key, set()):
+            classes.append("work_history_claim")
+        if "resume_claim" in provenance.get(key, set()):
+            classes.append("resume_claim")
         if detected:
             classes.append("detected")
-        else:
+        elif not classes:
+            classes.append("declared")
+        elif skill["profile"] and "declared" not in classes:
             classes.append("declared")
         for cls in classes:
-            totals[cls] += 1
+            totals[cls] = totals.get(cls, 0) + 1
         sources = sorted({k for r in detected for k in r["kinds"]} | ({"recorded"} if any(r["unrecorded"] for r in detected) else set())
                          | ({"project"} if any(not r["detected"] for r in rows) else set())
-                         | ({"profile"} if skill["profile"] else set()))
+                         | ({"profile"} if skill["profile"] else set())
+                         | ({"career"} if provenance.get(key) else set()))
         category = category_of(skill["name"])
         groups[category].append({
             "name": skill["name"],
@@ -201,7 +251,8 @@ def skill_matrix(db: Session, subject: User, viewer_id: UUID | None) -> dict:
         })
 
     def strength(skill: dict) -> tuple:
-        return (CLASS_ORDER.index(skill["classes"][0]), -skill["project_count"], skill["name"].lower())
+        idx = CLASS_ORDER.index(skill["classes"][0]) if skill["classes"][0] in CLASS_ORDER else len(CLASS_ORDER)
+        return (idx, -skill["project_count"], skill["name"].lower())
 
     categories = [
         {"key": key, "label": label, "skills": sorted(groups[key], key=strength)}

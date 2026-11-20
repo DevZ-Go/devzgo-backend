@@ -34,6 +34,8 @@ PRIORITY = {
     "unread_messages_digest": 40,
     "project_update": 40,
     "weekly_summary": 40,
+    "premium_expired": 30,
+    "premium_granted": 30,
 }
 
 

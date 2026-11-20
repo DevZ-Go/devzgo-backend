@@ -237,9 +237,11 @@ def notify(
     related_id: Optional[str],
     message: str,
     once: bool = False,
+    *,
+    allow_self: bool = False,
 ) -> Optional[Notification]:
     """Queue a notification (committed by the caller). `once` skips it if the same one already exists."""
-    if recipient_id == actor.id:
+    if recipient_id == actor.id and not allow_self:
         return None
     from app.services.safety import is_muted, silenced_by
 

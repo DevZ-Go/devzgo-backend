@@ -225,6 +225,8 @@ class TalentCard(BaseModel):
     work_types: List[str] = []
     work_arrangements: List[str] = []
     restricted: bool = False
+    visible_badges: List[str] = []
+    experience_categories: List[str] = []
     match: List[str] = []
 
 # ==================== LIKES & COMMENTS ====================

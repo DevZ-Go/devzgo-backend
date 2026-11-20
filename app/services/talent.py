@@ -246,6 +246,10 @@ class TalentQuery:
     work_type: str = ""
     arrangement: str = ""
     sort: str = "relevance"
+    # Visible badges only — never infer from a missing badge.
+    badge_family: str = ""  # experience | skill_evidence | assessment
+    badge_track: str = ""  # e.g. bronze, participation, professional
+    experience_category: str = ""  # confirmed career category with known duration
 
 
 def _list(value: str | None) -> list[str]:
@@ -350,6 +354,15 @@ def talent_board(db: Session, viewer_id: UUID | None, q: TalentQuery, limit: int
         if q.arrangement and q.arrangement not in arrangements:
             continue
 
+        visible_badges = _visible_badges(db, user, viewer_id) if open_profile else []
+        if q.badge_family and not any(b["family"] == q.badge_family for b in visible_badges):
+            continue
+        if q.badge_track and not any(b["track"] == q.badge_track for b in visible_badges):
+            continue
+        experience_categories = _visible_experience_categories(db, user, viewer_id) if open_profile else []
+        if q.experience_category and q.experience_category not in experience_categories:
+            continue
+
         show_connections = audience_open(db, user, viewer_id, "connection_visibility", "public")
         show_activity = audience_open(db, user, viewer_id, "activity_visibility", "public")
         connections = _connection_count(db, user.id) if show_connections else None
@@ -373,6 +386,10 @@ def talent_board(db: Session, viewer_id: UUID | None, q: TalentQuery, limit: int
             match.append("No GitHub history imported (not counted against them)")
         if open_to_work:
             match.append("Open to work" + (f": {', '.join(work_types)}" if work_types else ""))
+        if visible_badges:
+            match.append(f"{_plural(len(visible_badges), 'visible badge')}")
+        if experience_categories:
+            match.append(f"Shared experience: {', '.join(experience_categories[:4])}")
 
         cards.append({
             "id": user.id,
@@ -398,10 +415,13 @@ def talent_board(db: Session, viewer_id: UUID | None, q: TalentQuery, limit: int
             "work_types": work_types,
             "work_arrangements": arrangements,
             "restricted": not open_profile,
+            "visible_badges": [b["name"] for b in visible_badges[:6]],
+            "experience_categories": experience_categories,
             "match": match,
             "_tech_hits": len(in_projects) * 2 + len(in_skills),
             "_connections": -1 if connections is None else connections,
             "_activity": -1 if activity is None else activity,
+            "_badges": len(visible_badges),
         })
 
     key = {
@@ -415,9 +435,55 @@ def talent_board(db: Session, viewer_id: UUID | None, q: TalentQuery, limit: int
     }[q.sort]
     cards.sort(key=key, reverse=True)
     for card in cards:
-        for private in ("_tech_hits", "_connections", "_activity"):
-            card.pop(private)
+        for private in ("_tech_hits", "_connections", "_activity", "_badges"):
+            card.pop(private, None)
     return cards[:limit]
+
+
+def _visible_badges(db: Session, user: User, viewer_id: UUID | None) -> list[dict]:
+    """Only badges the owner made visible to this viewer. Absence never implies lack of achievement."""
+    try:
+        from app.models.badges import BadgeDefinition, EarnedBadge
+        from app.services.career_privacy import viewer_can_see
+    except Exception:
+        return []
+    rows = (
+        db.query(EarnedBadge, BadgeDefinition)
+        .join(BadgeDefinition, BadgeDefinition.id == EarnedBadge.definition_id)
+        .filter(EarnedBadge.user_id == user.id, EarnedBadge.revoked_at.is_(None), BadgeDefinition.status == "active")
+        .all()
+    )
+    out = []
+    for earned, definition in rows:
+        if viewer_can_see(db, owner=user, viewer=_viewer_user(db, viewer_id), audience=earned.visibility):
+            out.append({"family": definition.family, "track": definition.track, "name": definition.name})
+    return out
+
+
+def _viewer_user(db: Session, viewer_id: UUID | None) -> User | None:
+    if not viewer_id:
+        return None
+    return db.query(User).filter(User.id == viewer_id).first()
+
+
+def _visible_experience_categories(db: Session, user: User, viewer_id: UUID | None) -> list[str]:
+    try:
+        from app.models.career import CareerExperience
+        from app.services.career_privacy import viewer_can_see
+    except Exception:
+        return []
+    rows = (
+        db.query(CareerExperience)
+        .filter(CareerExperience.user_id == user.id, CareerExperience.review_state == "confirmed")
+        .all()
+    )
+    viewer = _viewer_user(db, viewer_id)
+    cats = []
+    for row in rows:
+        if viewer_can_see(db, owner=user, viewer=viewer, audience=row.visibility):
+            if row.category not in cats:
+                cats.append(row.category)
+    return cats
 
 
 def field_top(db: Session, viewer_id: UUID | None) -> dict:

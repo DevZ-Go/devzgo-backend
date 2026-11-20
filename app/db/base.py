@@ -25,3 +25,14 @@ from app.models.workspace import GitHubConnection, WorkspaceAuditEvent, Workspac
 from app.models.admin import AdminAuditEvent, AdminInvite, AdminProposal, AdminProposalVote, PlatformAdmin
 from app.models.usage import UsageEvent
 from app.models.email import EmailChangeRequest, EmailDeliveryEvent, EmailOutbox, PendingRegistration
+from app.models.career import (
+    CareerCertification, CareerEducation, CareerExperience, CareerExperienceProject,
+    CareerFieldVisibility, CareerSkillInterval, ResumeExtractedItem, ResumeImportJob,
+)
+from app.models.badges import (
+    AssessmentAchievementRecord, BadgeCriteriaVersion, BadgeDefinition, EarnedBadge, SkillEvidenceRecord,
+)
+from app.models.entitlements import (
+    CandidateEvaluation, ConsentRecord, CareerAuditLog, Entitlement,
+    GeneratedResume, GeneratedResumeVersion, ResumeExport,
+)

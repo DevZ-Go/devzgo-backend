@@ -103,6 +103,13 @@ def run_once() -> None:
         for row in claim_batch(db):
             process_one(db, row)
         cleanup_pendings(db)
+        try:
+            from app.services.entitlements import notify_expired_premium
+            notify_expired_premium(db)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            log.exception("premium expiry notify failed")
+            db.rollback()
     finally:
         db.close()
 
