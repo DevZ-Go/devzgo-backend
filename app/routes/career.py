@@ -384,8 +384,8 @@ def grant_entitlement(
     if not admin:
         raise HTTPException(status_code=403, detail="Only platform admins can grant entitlements")
     feature = str(data.get("feature") or "resume_studio")
-    if feature != "resume_studio":
-        raise HTTPException(status_code=400, detail="Only resume_studio grants are supported")
+    if feature not in ("resume_studio", "project_intelligence"):
+        raise HTTPException(status_code=400, detail="Supported features: resume_studio, project_intelligence")
     days = data.get("days")
     if days is not None:
         try:

@@ -10,7 +10,7 @@ from sqlalchemy.sql import func
 
 from app.db.session import Base
 
-ENTITLEMENT_FEATURES = ("resume_studio",)
+ENTITLEMENT_FEATURES = ("resume_studio", "project_intelligence")
 ENTITLEMENT_SOURCES = ("dev_grant", "admin_grant", "billing")  # billing reserved; unused until approved
 
 

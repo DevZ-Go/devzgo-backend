@@ -36,3 +36,19 @@ from app.models.entitlements import (
     CandidateEvaluation, ConsentRecord, CareerAuditLog, Entitlement,
     GeneratedResume, GeneratedResumeVersion, ResumeExport,
 )
+from app.models.project_intelligence import (
+    PiGenerationRecord,
+    PiMonthlyUsage,
+    PiVisitorAiRequest,
+    ProjectAiDescriptionDraft,
+    ProjectAiPublication,
+    ProjectAiUsageLedger,
+    ProjectAnalysisJob,
+    ProjectAnalysisPreference,
+    ProjectEvidenceClaim,
+    ProjectEvidenceRef,
+    ProjectIntelligenceSettings,
+    ProjectPlainInsight,
+    ProjectSourceSnapshot,
+)
+from app.models.platform_settings import PlatformSetting

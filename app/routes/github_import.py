@@ -193,7 +193,7 @@ def import_repo(repo_id: int, data: HandleRequest, db: Session = Depends(get_db)
             else:
                 code, detail = "empty", "The repository has no commits yet."
         except gh.ArchiveTooLarge:
-            code, detail = "skipped", "The code is larger than the 50 MB upload limit, so only the details were imported."
+            code, detail = "skipped", "The code is larger than the 200 MB upload limit, so only the details were imported."
             source_state.mark(db, project_id, source_state.FAILED, detail)
         except HTTPException as exc:
             code, detail = "skipped", str(exc.detail)

@@ -33,3 +33,8 @@ def badges_enabled() -> bool:
 
 def resume_studio_enabled() -> bool:
     return _flag("FEATURE_RESUME_STUDIO", True)
+
+
+def project_intelligence_enabled() -> bool:
+    """Project Intelligence (evidence analysis + plain insights + optional AI drafts). Off until eval."""
+    return _flag("FEATURE_PROJECT_INTELLIGENCE", False)

@@ -91,7 +91,7 @@ def grant_all_developers(
 
 def list_for_user(db: Session, user_id: UUID) -> list[dict]:
     features = []
-    for feature in ("resume_studio",):
+    for feature in ("resume_studio", "project_intelligence"):
         row = db.query(Entitlement).filter(Entitlement.user_id == user_id, Entitlement.feature == feature).first()
         active = has_feature(db, user_id, feature)
         features.append({

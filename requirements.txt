@@ -37,3 +37,4 @@ cryptography==44.0.3
 PyMuPDF==1.25.5
 python-docx==1.1.2
 reportlab==4.3.1
+openai>=1.60.0

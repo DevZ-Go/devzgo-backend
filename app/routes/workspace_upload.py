@@ -330,6 +330,13 @@ def install_workspace_zip(
         if not in_bucket and previous.exists():
             shutil.rmtree(previous, ignore_errors=True)
 
+        # Project Intelligence: deterministic evidence analysis (never blocks upload; never auto-calls external AI).
+        try:
+            from app.services.project_intelligence.enqueue import maybe_enqueue_after_install
+            maybe_enqueue_after_install(db, project, workspace_root, requested_by=project.owner_id)
+        except Exception:
+            pass
+
         return {
             "message": "Workspace uploaded successfully",
             "total_files": total_files,

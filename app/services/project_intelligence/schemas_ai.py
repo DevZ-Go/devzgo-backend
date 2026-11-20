@@ -1,0 +1,64 @@
+"""Compact Pydantic schemas for Free vs Premium AI packages (Responses API parse)."""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class EvidenceRefOut(BaseModel):
+    claim_id: Optional[str] = None
+    source_file: Optional[str] = None
+    note: Optional[str] = None
+
+
+class FreeAiPackageSchema(BaseModel):
+    """Free plan: short description + mandatory simple English + features. No long overview."""
+
+    short_description: str = Field(..., max_length=280)
+    what_is_this: str = Field(..., max_length=400)
+    what_it_does: str = Field(..., max_length=500)
+    why_use_it: str = Field(..., max_length=400)
+    who_benefits: str = Field(..., max_length=300)
+    how_it_works_simple: str = Field(..., max_length=700)
+    key_features: List[str] = Field(default_factory=list, max_length=6)
+    uncertainties: List[str] = Field(default_factory=list, max_length=4)
+    evidence_refs: List[EvidenceRefOut] = Field(default_factory=list, max_length=8)
+
+    @field_validator("key_features", "uncertainties", mode="before")
+    @classmethod
+    def _listify(cls, value):
+        if value is None:
+            return []
+        return value
+
+
+class PremiumAiPackageSchema(FreeAiPackageSchema):
+    """Premium: free fields + long description + technical + recruiter bullets."""
+
+    detailed_description: str = Field(default="", max_length=2500)
+    technical_explanation: str = Field(default="", max_length=2000)
+    resume_bullets: List[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("resume_bullets", mode="before")
+    @classmethod
+    def _listify_resume(cls, value):
+        if value is None:
+            return []
+        return value
+
+
+# Backward-compatible alias used by older callers
+ProjectDescriptionDraftSchema = PremiumAiPackageSchema
+
+
+def schema_model_for_plan(*, premium: bool, include_detailed: bool) -> type[BaseModel]:
+    if premium and include_detailed:
+        return PremiumAiPackageSchema
+    return FreeAiPackageSchema
+
+
+def schema_for_selection(_selection: dict | None = None) -> dict:
+    """Legacy JSON-schema helper — prefer schema_model_for_plan + responses.parse."""
+    return FreeAiPackageSchema.model_json_schema()

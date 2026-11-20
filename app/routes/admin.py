@@ -300,3 +300,95 @@ def access(ctx: AdminContext = Depends(require_admin), db: Session = Depends(get
         "you": ctx.user.email,
         "your_role": ctx.role,
     }
+
+
+@router.get("/project-intelligence")
+def get_project_intelligence_settings(ctx: AdminContext = Depends(require_admin), db: Session = Depends(get_db)):
+    """Admin-tunable Project Intelligence limits, switches, and spend overview."""
+    from app.core.feature_flags import project_intelligence_enabled
+    from app.services.project_intelligence.quota import admin_usage_overview, get_pi_settings
+
+    overview = admin_usage_overview(db)
+    return {
+        "feature_flag_enabled": project_intelligence_enabled(),
+        "settings": get_pi_settings(db),
+        "overview": overview,
+    }
+
+
+@router.patch("/project-intelligence")
+def patch_project_intelligence_settings(
+    body: dict,
+    ctx: AdminContext = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    from app.models.admin import AdminAuditEvent
+    from app.services.project_intelligence.quota import set_pi_settings
+
+    patch = body.get("settings") if isinstance(body.get("settings"), dict) else body
+    settings = set_pi_settings(db, patch or {}, updated_by=ctx.user.id)
+    db.add(
+        AdminAuditEvent(
+            actor_id=ctx.user.id,
+            actor_email=ctx.user.email,
+            action="pi_settings_update",
+            summary="Updated Project Intelligence settings",
+            severity="info",
+            target_type="platform_settings",
+            target_id="project_intelligence",
+            payload={"settings": settings},
+        )
+    )
+    db.commit()
+    return {"settings": settings}
+
+
+@router.post("/project-intelligence/premium")
+def grant_pi_premium(
+    body: dict,
+    ctx: AdminContext = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Assign or revoke Project Intelligence Premium for a user (no payments)."""
+    from app.models.admin import AdminAuditEvent
+    from app.models.user import User
+    from app.services import entitlements as ent
+
+    user_id = body.get("user_id")
+    email = body.get("email")
+    revoke = bool(body.get("revoke"))
+    days = body.get("days")
+    user = None
+    if user_id:
+        user = db.query(User).filter(User.id == user_id).first()
+    elif email:
+        user = db.query(User).filter(User.email == str(email).strip().lower()).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if revoke:
+        ent.revoke(db, user.id, "project_intelligence")
+        action = "pi_premium_revoke"
+    else:
+        ent.grant(
+            db,
+            user.id,
+            "project_intelligence",
+            source="admin_grant",
+            granted_by=ctx.user.id,
+            days=int(days) if days is not None else None,
+        )
+        action = "pi_premium_grant"
+    db.add(
+        AdminAuditEvent(
+            actor_id=ctx.user.id,
+            actor_email=ctx.user.email,
+            action=action,
+            summary=("Revoked" if revoke else "Granted") + f" PI Premium for {user.email}",
+            severity="info",
+            target_type="user",
+            target_id=str(user.id),
+            payload={"email": user.email, "days": days, "revoke": revoke},
+        )
+    )
+    db.commit()
+    return {"ok": True, "user_id": str(user.id), "email": user.email, "premium": not revoke}
