@@ -17,11 +17,14 @@ from app.core.dependencies import get_current_user, get_current_user_optional, r
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.clubs import EXEC_ROLES, ClubCustomRole, ClubMember, NetworkClub
+from app.models.message import Message
 from app.models.user import User
+from app.realtime.broadcaster import queue_event
 from app.services import storage
-from app.services.social import display_name
+from app.services.social import display_name, notify
 
 BANNER_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
+PRIVATE_TAG_MARKER = "__private__"
 
 router = APIRouter(prefix="/groups", tags=["Network clubs"])
 
@@ -74,13 +77,33 @@ def _member_out(m: ClubMember) -> dict:
     }
 
 
+def _is_private(club: NetworkClub) -> bool:
+    return PRIVATE_TAG_MARKER in (club.tags or [])
+
+
+def _clean_tags(tags: list[str] | None, *, private: bool = False) -> list[str]:
+    cleaned = [t.strip() for t in (tags or []) if t.strip() and t.strip() != PRIVATE_TAG_MARKER][:20]
+    if private:
+        cleaned.append(PRIVATE_TAG_MARKER)
+    return cleaned
+
+
 def _club_out(club: NetworkClub, viewer_id: Optional[UUID] = None) -> dict:
-    members = sorted(
-        club.members or [],
+    all_rows = list(club.members or [])
+    active_members = sorted(
+        [m for m in all_rows if m.role != "pending"],
         key=lambda m: (0 if m.role == "president" else 1, m.joined_at or club.created_at),
     )
-    president = next((m for m in members if m.role == "president"), None)
-    viewer_member = next((m for m in members if viewer_id and m.user_id == viewer_id), None)
+    pending_rows = sorted(
+        [m for m in all_rows if m.role == "pending"],
+        key=lambda m: m.joined_at or club.created_at,
+    )
+    president = next((m for m in active_members if m.role == "president"), None)
+    viewer_member = next((m for m in active_members if viewer_id and m.user_id == viewer_id), None)
+    viewer_pending = next((m for m in pending_rows if viewer_id and m.user_id == viewer_id), None)
+    viewer_is_exec = bool(viewer_member and viewer_member.role in EXEC_ROLES)
+    private = _is_private(club)
+    visible_tags = [t for t in (club.tags or []) if t != PRIVATE_TAG_MARKER]
     return {
         "id": str(club.id),
         "slug": club.slug,
@@ -88,20 +111,23 @@ def _club_out(club: NetworkClub, viewer_id: Optional[UUID] = None) -> dict:
         "tagline": club.tagline or "",
         "about": club.about or "",
         "category": club.category or "general",
+        "visibility": "private" if private else "public",
         "bannerUrl": club.banner_url,
         "avatarUrl": club.avatar_url,
         "hostId": str(president.user_id) if president else (str(club.created_by) if club.created_by else ""),
         "hostName": display_name(president.user) if president and president.user else "",
         "hostUsername": president.user.username if president and president.user else "",
         "hostTitle": (president.custom_title if president else None) or "President",
-        "memberCount": len(members),
+        "memberCount": len(active_members),
         "projectCount": 0,
         "announcementCount": 0,
         "isMember": bool(viewer_member),
+        "hasPendingRequest": bool(viewer_pending),
         "userRole": FRONT_ROLE.get(viewer_member.role, viewer_member.role) if viewer_member else None,
         "userCustomTitle": viewer_member.custom_title if viewer_member else None,
-        "members": [_member_out(m) for m in members],
-        "tags": list(club.tags or []),
+        "members": [_member_out(m) for m in active_members],
+        "pendingRequests": [_member_out(m) for m in pending_rows] if viewer_is_exec else [],
+        "tags": visible_tags,
         "policies": club.policies or "",
         "customRoles": [{"id": str(r.id), "title": r.title} for r in (club.custom_roles or [])],
         "createdAt": club.created_at.isoformat() if club.created_at else None,
@@ -156,10 +182,12 @@ class ClubCreateIn(BaseModel):
     tagline: str = Field(default="", max_length=280)
     about: str = Field(default="", max_length=8000)
     category: str = Field(default="general", max_length=40)
+    visibility: str = Field(default="public", max_length=16)
     tags: list[str] = Field(default_factory=list)
     policies: str = Field(default="", max_length=12000)
     bannerUrl: Optional[str] = None
     avatarUrl: Optional[str] = None
+    hostRole: Optional[str] = Field(default=None, max_length=40)
     hostTitle: Optional[str] = Field(default=None, max_length=120)
 
 
@@ -168,6 +196,7 @@ class ClubPatchIn(BaseModel):
     tagline: Optional[str] = Field(default=None, max_length=280)
     about: Optional[str] = Field(default=None, max_length=8000)
     category: Optional[str] = Field(default=None, max_length=40)
+    visibility: Optional[str] = Field(default=None, max_length=16)
     tags: Optional[list[str]] = None
     policies: Optional[str] = Field(default=None, max_length=12000)
     bannerUrl: Optional[str] = None
@@ -216,7 +245,7 @@ def my_groups(db: Session = Depends(get_db), me: User = Depends(require_develope
             .selectinload(User.profile),
             selectinload(ClubMember.club).selectinload(NetworkClub.custom_roles),
         )
-        .filter(ClubMember.user_id == me.id)
+        .filter(ClubMember.user_id == me.id, ClubMember.role != "pending")
         .order_by(ClubMember.joined_at.desc())
         .all()
     )
@@ -227,6 +256,7 @@ def my_groups(db: Session = Depends(get_db), me: User = Depends(require_develope
         row = _club_out(m.club, me.id)
         row["membershipRole"] = FRONT_ROLE.get(m.role, m.role)
         row["membershipTitle"] = m.custom_title
+        row["membershipJoinedAt"] = m.joined_at.isoformat() if m.joined_at else None
         out.append(row)
     return out
 
@@ -246,7 +276,7 @@ def clubs_for_user(
             .selectinload(User.profile),
             selectinload(ClubMember.club).selectinload(NetworkClub.custom_roles),
         )
-        .filter(ClubMember.user_id == user_id)
+        .filter(ClubMember.user_id == user_id, ClubMember.role != "pending")
         .order_by(ClubMember.joined_at.desc())
         .all()
     )
@@ -257,6 +287,7 @@ def clubs_for_user(
         row = _club_out(m.club, viewer.id if viewer else None)
         row["membershipRole"] = FRONT_ROLE.get(m.role, m.role)
         row["membershipTitle"] = m.custom_title
+        row["membershipJoinedAt"] = m.joined_at.isoformat() if m.joined_at else None
         out.append(row)
     return out
 
@@ -280,8 +311,19 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
         .first()
         is not None
     )
-    role = "executive" if already_president else "president"
-    title = (data.hostTitle or "").strip() or ("Founder" if already_president else "President")
+    requested_role = ROLE_ALIASES.get((data.hostRole or "").strip().lower())
+    if requested_role:
+        role = "executive" if (requested_role == "president" and already_president) else requested_role
+    else:
+        role = "executive" if already_president else "president"
+    default_title = {
+        "president": "President",
+        "vice_president": "Vice President",
+        "treasurer": "Treasurer",
+        "executive": "Founder" if already_president else "Executive Member",
+        "member": "Member",
+    }.get(role, "Founder")
+    title = (data.hostTitle or "").strip() or default_title
 
     club = NetworkClub(
         id=uuid.uuid4(),
@@ -290,7 +332,7 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
         tagline=(data.tagline or "").strip(),
         about=(data.about or "").strip(),
         category=(data.category or "general").strip()[:40],
-        tags=[t.strip() for t in (data.tags or []) if t.strip()][:20],
+        tags=_clean_tags(data.tags, private=(data.visibility or "").strip().lower() == "private"),
         policies=(data.policies or "").strip(),
         banner_url=(data.bannerUrl or None),
         avatar_url=(data.avatarUrl or None),
@@ -334,8 +376,14 @@ def patch_group(
         club.about = data.about.strip()
     if data.category is not None:
         club.category = data.category.strip()[:40]
-    if data.tags is not None:
-        club.tags = [t.strip() for t in data.tags if t.strip()][:20]
+    if data.tags is not None or data.visibility is not None:
+        is_priv = (
+            (data.visibility or "").strip().lower() == "private"
+            if data.visibility is not None
+            else _is_private(club)
+        )
+        base_tags = data.tags if data.tags is not None else [t for t in (club.tags or []) if t != PRIVATE_TAG_MARKER]
+        club.tags = _clean_tags(base_tags, private=is_priv)
     if data.policies is not None:
         club.policies = data.policies.strip()
     if data.bannerUrl is not None:
@@ -352,7 +400,104 @@ def join_group(club_id: str, db: Session = Depends(get_db), me: User = Depends(r
     existing = next((m for m in club.members if m.user_id == me.id), None)
     if existing:
         return _club_out(club, me.id)
+
+    if _is_private(club):
+        db.add(ClubMember(club_id=club.id, user_id=me.id, role="pending", custom_title="Pending Request"))
+        requester = display_name(me)
+        exec_members = [m for m in club.members if m.role in EXEC_ROLES and m.user_id != me.id]
+        msg_text = (
+            f"Club Join Request: {requester} (@{me.username}) requested to enter the private club "
+            f"\"{club.name}\". Review and approve in the club's Members tab: /network/groups/{club.slug}"
+        )
+        for ex in exec_members:
+            msg = Message(
+                id=uuid.uuid4(),
+                sender_id=me.id,
+                receiver_id=ex.user_id,
+                content=msg_text,
+                read=False,
+            )
+            db.add(msg)
+            notify(
+                db,
+                ex.user_id,
+                "message",
+                f"{requester} requested to join private club \"{club.name}\"",
+                related_id=me.id,
+                actor_id=me.id,
+            )
+            queue_event(
+                db,
+                ex.user_id,
+                "message",
+                {"sender_id": str(me.id), "club_id": str(club.id), "preview": msg_text[:140]},
+            )
+        db.commit()
+        return _club_out(_load_club(db, str(club.id)), me.id)
+
     db.add(ClubMember(club_id=club.id, user_id=me.id, role="member", custom_title="Member"))
+    db.commit()
+    return _club_out(_load_club(db, str(club.id)), me.id)
+
+
+@router.post("/{club_id}/requests/{target_user_id}/approve")
+def approve_join_request(
+    club_id: str,
+    target_user_id: UUID,
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    club = _load_club(db, club_id)
+    _require_exec(club, me.id)
+    req = next((m for m in club.members if m.user_id == target_user_id and m.role == "pending"), None)
+    if not req:
+        raise HTTPException(status_code=404, detail="Pending join request not found")
+    req.role = "member"
+    req.custom_title = "Member"
+    welcome = (
+        f"Your request to join \"{club.name}\" has been approved! "
+        f"Enter the channel here: /network/groups/{club.slug}"
+    )
+    db.add(
+        Message(
+            id=uuid.uuid4(),
+            sender_id=me.id,
+            receiver_id=target_user_id,
+            content=welcome,
+            read=False,
+        )
+    )
+    notify(
+        db,
+        target_user_id,
+        "message",
+        f"Your request to join \"{club.name}\" was approved!",
+        related_id=me.id,
+        actor_id=me.id,
+    )
+    queue_event(
+        db,
+        target_user_id,
+        "message",
+        {"sender_id": str(me.id), "club_id": str(club.id), "preview": welcome[:140]},
+    )
+    db.commit()
+    return _club_out(_load_club(db, str(club.id)), me.id)
+
+
+@router.post("/{club_id}/requests/{target_user_id}/decline")
+def decline_join_request(
+    club_id: str,
+    target_user_id: UUID,
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    club = _load_club(db, club_id)
+    _require_exec(club, me.id)
+    req = next((m for m in club.members if m.user_id == target_user_id and m.role == "pending"), None)
+    if not req:
+        raise HTTPException(status_code=404, detail="Pending join request not found")
+    db.delete(req)
     db.commit()
     return _club_out(_load_club(db, str(club.id)), me.id)
 
