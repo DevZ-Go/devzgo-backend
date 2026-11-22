@@ -8,6 +8,8 @@ from app.models.techstack import TechStack
 from app.models.associations import project_tech
 from app.models.file import File
 from app.models.network import NetworkActivity, ActivityLike, ActivityComment
+from app.models.content_save import ContentSave  # noqa: F401
+from app.models.link_preview import LinkPreview  # noqa: F401
 from app.models.connection import Connection
 from app.models.message import Message, MessageReaction
 from app.models.chat import ChatRoom, ChatMember, RoomMessage, RoomMessageReaction
@@ -18,6 +20,17 @@ from app.models.notification import Notification
 from app.models.project_like import ProjectLike
 from app.models.project_comment import ProjectComment, ProjectCommentLike  # noqa: F401
 from app.models.clubs import ClubCustomRole, ClubMember, NetworkClub  # noqa: F401
+from app.models.club_features import (  # noqa: F401
+    ClubAnnouncement,
+    ClubEvent,
+    ClubEventMedia,
+    ClubFundEntry,
+    ClubPoll,
+    ClubPollOption,
+    ClubPollVote,
+    ClubRolePermission,
+)
+from app.models.club_showcase import ClubShowcase  # noqa: F401
 from app.models.password_reset import PasswordResetToken
 from app.models.monthly_wrap import MonthlyWrap
 from app.models.recruiting import RecruitmentRequest, Shortlist, ShortlistEntry

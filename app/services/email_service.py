@@ -36,6 +36,7 @@ PRIORITY = {
     "weekly_summary": 40,
     "premium_expired": 30,
     "premium_granted": 30,
+    "club_broadcast": 40,
 }
 
 

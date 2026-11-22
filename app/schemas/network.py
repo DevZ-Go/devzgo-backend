@@ -314,6 +314,7 @@ class FeedActivityResponse(BaseModel):
     project: Optional[ProjectPreview] = None
     likes_count: int = 0
     is_liked: bool = False
+    is_saved: bool = False
     comments_count: int = 0
     comments: List[ActivityCommentResponse] = []  # the latest two, oldest first; the rest via /comments
     can_edit: bool = False  # author of a user post (system events cannot be edited)

@@ -61,6 +61,8 @@ from app.routes.resume_studio import router as resume_studio_router
 from app.routes.evaluations import router as evaluations_router
 from app.routes.project_intelligence import router as project_intelligence_router
 from app.routes.clubs import router as clubs_router
+from app.routes.club_features import router as club_features_router
+from app.routes.me_activity import router as me_activity_router
 from app.realtime.broadcaster import broadcaster
 from app.services import storage
 
@@ -123,11 +125,11 @@ app.add_middleware(
 )
 
 # Public media only: covers, videos, profile photos, club art. Do not expose storage/project_<uuid>/.
-_PUBLIC_MEDIA_KINDS = ("covers", "videos", "avatars", "resumes", "club-banners", "club-avatars")
+_PUBLIC_MEDIA_KINDS = ("covers", "videos", "avatars", "resumes", "club-banners", "club-avatars", "club-galleries")
 if storage.is_s3():
     @app.get("/storage/{kind}/{name}", include_in_schema=False)
     def media_redirect(
-        kind: Literal["covers", "videos", "avatars", "resumes", "club-banners", "club-avatars"],
+        kind: Literal["covers", "videos", "avatars", "resumes", "club-banners", "club-avatars", "club-galleries"],
         name: str,
     ):
         return RedirectResponse(storage.url(f"{kind}/{name}"))
@@ -175,6 +177,8 @@ app.include_router(resume_studio_router)
 app.include_router(evaluations_router)
 app.include_router(project_intelligence_router)
 app.include_router(clubs_router)
+app.include_router(club_features_router)
+app.include_router(me_activity_router)
 
 
 def _sweep_workspace() -> None:

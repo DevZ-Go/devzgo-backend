@@ -598,6 +598,38 @@ def unlike_project(
     return _like_response(db, project, False, current_user.id)
 
 
+@router.post("/{project_id}/save")
+def toggle_project_save(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+
+    from app.models.content_save import ContentSave
+
+    _likeable_project(db, project_id, current_user)
+    existing = (
+        db.query(ContentSave)
+        .filter(
+            ContentSave.user_id == current_user.id,
+            ContentSave.target_type == "project",
+            ContentSave.target_id == project_id,
+        )
+        .first()
+    )
+    if existing:
+        db.delete(existing)
+        db.commit()
+        return {"is_saved": False}
+    try:
+        db.add(ContentSave(user_id=current_user.id, target_type="project", target_id=project_id))
+        db.commit()
+    except _IntegrityError:
+        db.rollback()
+    return {"is_saved": True}
+
+
 # ---------------- UPDATE PROJECT ----------------
 @router.put(
     "/{project_id}",

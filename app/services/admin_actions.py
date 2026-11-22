@@ -20,7 +20,17 @@ from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.user import User
 from app.models.workspace import GitHubConnection
-from app.services.admin_catalog import delete_row, raw_row, table_spec
+from app.models.clubs import CLUB_ROLES, ClubMember, NetworkClub
+from app.services.admin_catalog import (
+    IMMUTABLE_TABLES,
+    TABLES,
+    can_delete_table,
+    delete_row,
+    editable_columns,
+    raw_row,
+    table_spec,
+    update_row,
+)
 from app.services.platform_admin import (
     OWNER_EMAIL,
     approval_requirement,
@@ -39,38 +49,51 @@ DELETION_ACTIONS = frozenset({
     "project.delete",
     "challenge.delete",
     "record.delete",
+    "club.delete",
 })
 
 
 def _owner_runs_deletion(actor: User, action: str) -> bool:
     return is_owner_email(actor.email) and action in DELETION_ACTIONS
 
-# table, severity, warning, column used as the confirmation text when it is short
-RECORD_DELETE: dict[str, tuple[str, str, str | None]] = {
-    "network_activities": ("important", "This removes the post from the network for everyone.", "title"),
-    "activity_comments": ("important", "This removes the comment for everyone.", "comment_text"),
-    "activity_likes": ("important", "This removes that like.", None),
-    "project_comments": ("important", "This removes the comment from the project for everyone.", "body"),
-    "project_likes": ("important", "This removes that like from the project.", None),
-    "messages": ("important", "This removes the direct message for both people. It cannot be put back from here.", "content"),
-    "room_messages": ("important", "This removes the group message for everyone in the chat.", "content"),
-    "notifications": ("important", "This removes the notification for that person.", "message"),
-    "connections": ("important", "This removes the connection. They would have to request it again.", None),
-    "collaboration_requests": ("important", "This removes the collaboration request.", None),
-    "project_invitations": ("important", "This cancels the project invitation.", None),
-    "challenge_invitations": ("important", "This removes the challenge invitation.", None),
-    "chat_mutes": ("important", "This clears the mute, so messages can notify them again.", None),
-    "user_blocks": ("important", "This removes the block or restrict between these two people.", None),
-    "shortlist_entries": ("important", "This removes the candidate from that private shortlist.", None),
-    "recruitment_requests": ("important", "This removes the recruitment request.", None),
-    "workspace_drafts": ("important", "This deletes unsaved editor work. That draft cannot be recovered.", "path"),
-    "files": ("important", "This removes the file from the project tree. The project may look incomplete afterward.", "file_name"),
-    "password_reset_tokens": ("important", "This invalidates that password-reset link.", None),
-    "project_tech": ("important", "This detaches that technology from the project.", None),
-    "chat_rooms": ("critical", "This deletes the whole group chat and its messages for every member.", "title"),
-    "shortlists": ("critical", "This deletes the shortlist and the private notes inside it.", "name"),
-    "monthly_wraps": ("critical", "A monthly wrap is stored once and is not rebuilt. Deleting it removes that month permanently.", None),
+# Overrides for delete severity / warning / typed confirm column. Everything else uses defaults.
+_RECORD_DELETE_META: dict[str, tuple[str, str, str | None]] = {
+    "network_activities": ("important", "Removes this network post for everyone.", "title"),
+    "activity_comments": ("important", "Removes this comment for everyone.", "comment_text"),
+    "messages": ("important", "Removes this DM for both people.", "content"),
+    "room_messages": ("important", "Removes this group message for everyone.", "content"),
+    "files": ("important", "Removes this file from the project tree.", "file_name"),
+    "workspace_drafts": ("important", "Deletes unsaved editor work.", "path"),
+    "chat_rooms": ("critical", "Deletes the whole group chat and its messages.", "title"),
+    "shortlists": ("critical", "Deletes the shortlist and private notes inside it.", "name"),
+    "monthly_wraps": ("critical", "Deletes this monthly wrap permanently.", None),
+    "network_clubs": ("critical", "Deletes the club, members, events, polls, and funds.", "name"),
+    "earned_badges": ("important", "Removes this earned badge from the person.", None),
+    "entitlements": ("important", "Removes this premium entitlement row.", None),
+    "generated_resumes": ("important", "Deletes this Resume Studio resume.", "title"),
+    "club_members": ("important", "Removes this person from the club.", None),
+    "club_announcements": ("important", "Removes this club announcement.", "title"),
+    "club_events": ("important", "Removes this club event.", "title"),
+    "club_polls": ("important", "Removes this club poll.", "question"),
+    "club_showcases": ("important", "Removes this club showcase.", "title"),
+    "club_fund_entries": ("important", "Removes this funds ledger row.", "note"),
+    "content_saves": ("important", "Removes this saved item.", None),
+    "email_outbox": ("important", "Removes this queued email.", None),
+    "pending_registrations": ("important", "Cancels this pending signup.", None),
 }
+
+
+def _record_delete_spec(table: str) -> tuple[str, str, str | None]:
+    if not can_delete_table(table):
+        raise HTTPException(status_code=400, detail="That record cannot be removed from the admin area")
+    if table in _RECORD_DELETE_META:
+        return _RECORD_DELETE_META[table]
+    label = table_spec(table)[1]
+    return ("important", f"Removes this row from {label}.", None)
+
+
+# Back-compat alias used by RecordDelete._meta
+RECORD_DELETE = {name: _record_delete_spec(name) for name, *_ in TABLES if name not in IMMUTABLE_TABLES}
 
 
 @dataclass
@@ -965,31 +988,51 @@ class GrantPremiumAll:
         return f"Granted Premium (Resume Studio + PI) to {count} developers with no expiry"
 
 
+def _clean_pk(payload: dict) -> dict[str, str]:
+    pk = payload.get("pk")
+    if not isinstance(pk, dict) or not pk:
+        raise HTTPException(status_code=400, detail="Choose a record first")
+    return {str(key): str(value) for key, value in pk.items() if value is not None and not str(key).startswith("_")}
+
+
+def _typed_from_row(row: dict, column: str | None, pk: dict) -> str:
+    if column and column in row:
+        text = row[column]
+        if isinstance(text, str):
+            compact = " ".join(text.split())
+            if 1 <= len(compact) <= 80:
+                return compact
+    if "id" in pk:
+        return pk["id"]
+    return " / ".join(pk[key] for key in sorted(pk))
+
+
+def _load_club(db: Session, club_id) -> NetworkClub:
+    club = db.get(NetworkClub, _uuid(club_id, "Choose a club first"))
+    if club is None:
+        raise HTTPException(status_code=404, detail="That club is no longer there")
+    return club
+
+
+def _club_member(db: Session, club: NetworkClub, user_id) -> ClubMember:
+    member = (
+        db.query(ClubMember)
+        .filter(ClubMember.club_id == club.id, ClubMember.user_id == _uuid(user_id, "Choose a member first"))
+        .first()
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="That person is not in this club")
+    return member
+
+
 class RecordDelete:
     key = "record.delete"
 
     def _meta(self, payload) -> tuple[str, dict, tuple[str, str, str | None]]:
         table = str(payload.get("table") or "")
-        spec = RECORD_DELETE.get(table)
-        if spec is None:
-            raise HTTPException(status_code=400, detail="That record cannot be removed from the admin area")
-        table_spec(table)  # 404 when the table is not real
-        pk = payload.get("pk")
-        if not isinstance(pk, dict) or not pk:
-            raise HTTPException(status_code=400, detail="Choose a record first")
-        cleaned = {str(key): str(value) for key, value in pk.items() if value is not None and not str(key).startswith("_")}
-        return table, cleaned, spec
-
-    def _typed(self, row: dict, column: str | None, pk: dict) -> str:
-        if column and column in row:
-            text = row[column]
-            if isinstance(text, str):
-                compact = " ".join(text.split())
-                if 1 <= len(compact) <= 80:
-                    return compact
-        if "id" in pk:
-            return pk["id"]
-        return " / ".join(pk[key] for key in sorted(pk))
+        spec = _record_delete_spec(table)
+        table_spec(table)
+        return table, _clean_pk(payload), spec
 
     def build(self, db, actor, target_id, payload) -> Preview:
         table, pk, (severity, warning, column) = self._meta(payload)
@@ -997,7 +1040,7 @@ class RecordDelete:
         if row is None:
             raise HTTPException(status_code=404, detail="That record is no longer there")
         label = table_spec(table)[1]
-        typed = self._typed(row, column, pk)
+        typed = _typed_from_row(row, column, pk)
         preview = Preview(
             action=self.key, label=f"Remove {label[:-1] if label.endswith('s') else label}",
             severity=severity, warning=warning,
@@ -1015,6 +1058,281 @@ class RecordDelete:
         return f"Removed a row from {label}"
 
 
+class RecordUpdate:
+    key = "record.update"
+
+    def _meta(self, payload) -> tuple[str, dict, dict]:
+        table = str(payload.get("table") or "")
+        table_spec(table)
+        allowed = editable_columns(table)
+        if not allowed:
+            raise HTTPException(status_code=400, detail="That record cannot be edited from the admin area")
+        fields = payload.get("fields")
+        if not isinstance(fields, dict) or not fields:
+            raise HTTPException(status_code=400, detail="Choose at least one field to change")
+        cleaned = {str(k): v for k, v in fields.items() if str(k) in allowed}
+        if not cleaned:
+            raise HTTPException(status_code=400, detail="Those fields cannot be edited here")
+        return table, _clean_pk(payload), cleaned
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        table, pk, fields = self._meta(payload)
+        row = raw_row(db, table, pk)
+        if row is None:
+            raise HTTPException(status_code=404, detail="That record is no longer there")
+        label = table_spec(table)[1]
+        typed = _typed_from_row(row, "name" if "name" in row else ("title" if "title" in row else None), pk)
+        keys = ", ".join(sorted(fields))
+        preview = Preview(
+            action=self.key, label=f"Edit {label[:-1] if label.endswith('s') else label}",
+            severity="important",
+            warning=f"Updates {keys} on this {label[:-1] if label.endswith('s') else label.lower()} row.",
+            typed_label="Type this to confirm", typed_value=typed, casefold=False,
+            summary=f"Edit {keys} on {label}",
+        )
+        return preview
+
+    def run(self, db, actor, target_id, payload) -> str:
+        table, pk, fields = self._meta(payload)
+        if raw_row(db, table, pk) is None:
+            raise HTTPException(status_code=404, detail="That record is already gone")
+        update_row(db, table, pk, fields)
+        label = table_spec(table)[1]
+        return f"Updated {', '.join(sorted(fields))} on {label}"
+
+
+class ClubVerify:
+    key, label, severity = "club.verify", "Verify club", "important"
+    warning = "Marks this club as verified. The verified badge appears on the club page."
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        return Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Verify club {club.name}",
+        )
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        club.verification_status = "verified"
+        club.verification_note = None
+        club.verified_at = _now()
+        club.verified_by = actor.id
+        _flush(db)
+        return f"Verified club {club.name}"
+
+
+class ClubReject:
+    key, label, severity = "club.reject", "Reject club verification", "important"
+    warning = "Rejects the verification request. Optional note is stored on the club."
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        return Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Reject verification for {club.name}",
+        )
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        note = str(payload.get("note") or "").strip()[:500] or None
+        club.verification_status = "rejected"
+        club.verification_note = note
+        club.verified_at = None
+        club.verified_by = None
+        _flush(db)
+        return f"Rejected verification for {club.name}"
+
+
+class ClubRevokeVerify:
+    key, label, severity = "club.revoke_verify", "Revoke club verification", "important"
+    warning = "Removes the verified badge. The club stays online."
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        return Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Revoke verification for {club.name}",
+        )
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        club.verification_status = "none"
+        club.verification_note = None
+        club.verified_at = None
+        club.verified_by = None
+        _flush(db)
+        return f"Revoked verification for {club.name}"
+
+
+class ClubEdit:
+    key, label, severity = "club.edit", "Edit club", "important"
+    warning = "Updates club profile fields visible to members and visitors."
+    _FIELDS = frozenset({
+        "name", "tagline", "about", "category", "institution", "join_policy",
+        "policies", "purpose", "funds_visibility", "slug",
+    })
+
+    def _fields(self, payload: dict) -> dict:
+        raw = payload.get("fields") if isinstance(payload.get("fields"), dict) else payload
+        cleaned = {str(k): (None if v is None else str(v)) for k, v in raw.items() if str(k) in self._FIELDS}
+        if not cleaned:
+            raise HTTPException(status_code=400, detail="Choose at least one club field to change")
+        return cleaned
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        fields = self._fields(payload)
+        return Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Edit {', '.join(sorted(fields))} on {club.name}",
+        )
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        fields = self._fields(payload)
+        for key, value in fields.items():
+            setattr(club, key, value)
+        _flush(db)
+        return f"Updated {', '.join(sorted(fields))} on {club.name}"
+
+
+class ClubDelete:
+    key, label, severity = "club.delete", "Delete club", "critical"
+    warning = "Permanently deletes the club and all members, events, polls, funds, and showcases. No undo."
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        preview = Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Delete club {club.name}",
+        )
+        return _quorum(db, actor, preview, None)
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        name = club.name
+        db.delete(club)
+        _flush(db)
+        return f"Deleted club {name}"
+
+
+class ClubSetPresident:
+    key, label, severity = "club.set_president", "Assign club president", "important"
+    warning = (
+        "Makes this member president of the club. The previous president becomes executive. "
+        "A person may only preside over one club."
+    )
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        user_id = payload.get("user_id")
+        member = _club_member(db, club, user_id)
+        user = load_user(db, member.user_id)
+        return Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Make @{user.username} president of {club.name}",
+        )
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        member = _club_member(db, club, payload.get("user_id"))
+        for other in db.query(ClubMember).filter(ClubMember.club_id == club.id, ClubMember.role == "president").all():
+            if other.user_id != member.user_id:
+                other.role = "executive"
+                if not other.custom_title or other.custom_title.lower() == "president":
+                    other.custom_title = "Executive"
+        member.role = "president"
+        member.custom_title = (str(payload.get("custom_title") or "").strip() or "President")
+        try:
+            _flush(db)
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="That person already presidents another club.")
+        user = load_user(db, member.user_id)
+        return f"Made @{user.username} president of {club.name}"
+
+
+class ClubSetRole:
+    key, label, severity = "club.set_role", "Change club member role", "important"
+    warning = "Changes this member's role. Use Assign president to transfer the presidency."
+
+    def _role(self, payload: dict) -> str:
+        role = str(payload.get("role") or "").strip().lower()
+        if role == "host":
+            role = "president"
+        if role not in CLUB_ROLES:
+            raise HTTPException(status_code=400, detail="Choose a valid club role")
+        if role == "president":
+            raise HTTPException(status_code=400, detail="Use Assign president to transfer the presidency")
+        return role
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        member = _club_member(db, club, payload.get("user_id"))
+        role = self._role(payload)
+        user = load_user(db, member.user_id)
+        return Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Set @{user.username} to {role} in {club.name}",
+        )
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        member = _club_member(db, club, payload.get("user_id"))
+        role = self._role(payload)
+        if member.role == "president":
+            raise HTTPException(status_code=400, detail="Assign a new president before changing the current president's role.")
+        defaults = {
+            "vice_president": "Vice President",
+            "treasurer": "Treasurer",
+            "executive": "Executive",
+            "member": "Member",
+        }
+        member.role = role
+        title = str(payload.get("custom_title") or "").strip()
+        member.custom_title = title or defaults.get(role, "Member")
+        _flush(db)
+        user = load_user(db, member.user_id)
+        return f"Set @{user.username} to {role} in {club.name}"
+
+
+class ClubRemoveMember:
+    key, label, severity = "club.remove_member", "Remove club member", "important"
+    warning = "Removes this person from the club. They can rejoin if the join policy allows it."
+
+    def build(self, db, actor, target_id, payload) -> Preview:
+        club = _load_club(db, target_id)
+        member = _club_member(db, club, payload.get("user_id"))
+        user = load_user(db, member.user_id)
+        blocked = None
+        if member.role == "president":
+            blocked = "Assign a new president before removing the current president."
+        return Preview(
+            action=self.key, label=self.label, severity=self.severity, warning=self.warning,
+            typed_label="Type the club name to confirm", typed_value=club.name, casefold=True,
+            summary=f"Remove @{user.username} from {club.name}",
+            blocked=blocked,
+        )
+
+    def run(self, db, actor, target_id, payload) -> str:
+        club = _load_club(db, target_id)
+        member = _club_member(db, club, payload.get("user_id"))
+        if member.role == "president":
+            raise HTTPException(status_code=400, detail="Assign a new president before removing the current president.")
+        user = load_user(db, member.user_id)
+        db.delete(member)
+        _flush(db)
+        return f"Removed @{user.username} from {club.name}"
+
+
 ACTIONS = {
     item.key: item
     for item in (
@@ -1024,7 +1342,9 @@ ACTIONS = {
         ChallengeStatus(), ChallengeDelete(), GithubDisconnect(),
         GrantAdmin(), RevokeInvite(), RevokeAdmin(),
         GrantPremium(), RevokePremium(), GrantPremiumAll(),
-        RecordDelete(),
+        RecordDelete(), RecordUpdate(),
+        ClubVerify(), ClubReject(), ClubRevokeVerify(), ClubEdit(), ClubDelete(),
+        ClubSetPresident(), ClubSetRole(), ClubRemoveMember(),
     )
 }
 
