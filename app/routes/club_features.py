@@ -40,6 +40,13 @@ router = APIRouter(prefix="/groups", tags=["Network club features"])
 BANNER_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
 
 
+def _is_image_upload(file: UploadFile, ext: str) -> bool:
+    if ext not in BANNER_EXTS:
+        return False
+    content = (file.content_type or "").strip().lower()
+    return (not content) or content.startswith("image/")
+
+
 def _normalize_media(items: list) -> list:
     out = []
     for item in items or []:
@@ -649,7 +656,7 @@ def upload_event_poster(
     if not row:
         raise HTTPException(status_code=404, detail="Event not found")
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+    if not _is_image_upload(file, ext):
         raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
     file.file.seek(0, 2)
     too_big = file.file.tell() > 12 * 1024 * 1024
@@ -950,9 +957,9 @@ def upload_event_media(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    content = file.content_type or ""
-    is_image = ext in BANNER_EXTS and content.startswith("image/")
-    is_video = ext in ("mp4", "webm", "mov") and content.startswith("video/")
+    content = (file.content_type or "").strip().lower()
+    is_image = _is_image_upload(file, ext)
+    is_video = ext in ("mp4", "webm", "mov") and (not content or content.startswith("video/"))
     if not is_image and not is_video:
         raise HTTPException(status_code=400, detail="Upload an image or mp4/webm/mov video")
     file.file.seek(0, 2)
@@ -1146,9 +1153,9 @@ def upload_announcement_media(
     club = _load_club(db, club_id)
     _require_perm(db, club, me.id, "announcements")
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    content = file.content_type or ""
-    is_image = ext in BANNER_EXTS and content.startswith("image/")
-    is_video = ext in ("mp4", "webm", "mov") and content.startswith("video/")
+    content = (file.content_type or "").strip().lower()
+    is_image = _is_image_upload(file, ext)
+    is_video = ext in ("mp4", "webm", "mov") and (not content or content.startswith("video/"))
     if not is_image and not is_video:
         raise HTTPException(status_code=400, detail="Upload an image or mp4/webm/mov video")
     file.file.seek(0, 2)
@@ -1246,7 +1253,7 @@ def upload_showcase_cover(
     club = _load_club(db, club_id)
     _require_member(club, me.id)
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+    if not _is_image_upload(file, ext):
         raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
     file.file.seek(0, 2)
     too_big = file.file.tell() > 8 * 1024 * 1024

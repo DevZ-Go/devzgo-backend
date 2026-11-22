@@ -25,6 +25,15 @@ from app.services.social import display_name
 
 BANNER_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
 
+
+def _is_image_upload(file: UploadFile, ext: str) -> bool:
+    """Accept image/* or empty content-type when the extension is a known image (croppers often omit MIME)."""
+    if ext not in BANNER_EXTS:
+        return False
+    content = (file.content_type or "").strip().lower()
+    return (not content) or content.startswith("image/")
+
+
 router = APIRouter(prefix="/groups", tags=["Network clubs"])
 
 ROLE_ALIASES = {
@@ -660,7 +669,7 @@ def upload_club_banner(
     club = _load_club(db, club_id)
     _require_exec(club, me.id)
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+    if not _is_image_upload(file, ext):
         raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
     file.file.seek(0, 2)
     too_big = file.file.tell() > 8 * 1024 * 1024
@@ -685,7 +694,7 @@ def upload_club_avatar(
     club = _load_club(db, club_id)
     _require_exec(club, me.id)
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+    if not _is_image_upload(file, ext):
         raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
     file.file.seek(0, 2)
     too_big = file.file.tell() > 5 * 1024 * 1024

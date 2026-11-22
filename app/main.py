@@ -171,11 +171,33 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 # Public media only: covers, videos, profile photos, club art. Do not expose storage/project_<uuid>/.
-_PUBLIC_MEDIA_KINDS = ("covers", "videos", "avatars", "resumes", "club-banners", "club-avatars", "club-galleries")
+_PUBLIC_MEDIA_KINDS = (
+    "covers",
+    "videos",
+    "avatars",
+    "resumes",
+    "club-banners",
+    "club-avatars",
+    "club-galleries",
+    "club-event-posters",
+    "club-announcement-media",
+    "club-showcase-covers",
+)
 if storage.is_s3():
     @app.get("/storage/{kind}/{name}", include_in_schema=False)
     def media_redirect(
-        kind: Literal["covers", "videos", "avatars", "resumes", "club-banners", "club-avatars", "club-galleries"],
+        kind: Literal[
+            "covers",
+            "videos",
+            "avatars",
+            "resumes",
+            "club-banners",
+            "club-avatars",
+            "club-galleries",
+            "club-event-posters",
+            "club-announcement-media",
+            "club-showcase-covers",
+        ],
         name: str,
     ):
         return RedirectResponse(storage.url(f"{kind}/{name}"))
