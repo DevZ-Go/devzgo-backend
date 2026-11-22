@@ -264,6 +264,23 @@ def render_template(name: str, ctx: dict[str, Any]) -> tuple[str, str, str]:
         text = render_text(title=subject, lines=[f"Hi {username}, your Resume Studio Premium access has ended."])
         return subject, html, text
 
+    if name == "club_broadcast":
+        club_name = str(ctx.get("club_name") or "your club")
+        subject = str(ctx.get("subject") or f"Update from {club_name}")
+        body = str(ctx.get("body") or "")
+        slug = str(ctx.get("club_slug") or "")
+        html = render_email(
+            preheader=subject[:120],
+            title=club_name,
+            body_html=_p(f"Hi {username}, {club_name} sent this update to opted-in members.")
+            + f'<div style="margin:16px 0;padding:16px;border:1px solid #DECDBA;border-radius:8px;background:#F7F1E8;">{escape(body).replace(chr(10), "<br/>")}</div>'
+            + _p("You can turn off club broadcast emails in Settings → Notifications."),
+            cta_label="Open club",
+            cta_url=site_url(f"/network/groups/{slug}" if slug else "/network/groups"),
+        )
+        text = render_text(title=subject, lines=[f"Hi {username},", body, site_url("/settings")])
+        return subject, html, text
+
     raise ValueError(f"Unknown email template: {name}")
 
 

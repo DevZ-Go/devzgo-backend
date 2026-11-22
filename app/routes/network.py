@@ -114,6 +114,23 @@ def _format_many(db: Session, acts: List[NetworkActivity], viewer_id: Optional[U
     likes, comments = _grouped_counts(db, ActivityLike, ids), _grouped_counts(db, ActivityComment, ids)
     liked = {r[0] for r in db.query(ActivityLike.activity_id).filter(
         ActivityLike.activity_id.in_(ids), ActivityLike.user_id == viewer_id)} if viewer_id else set()
+    saved: Set[UUID] = set()
+    if viewer_id:
+        try:
+            from app.models.content_save import ContentSave
+
+            saved = {
+                r[0]
+                for r in db.query(ContentSave.target_id)
+                .filter(
+                    ContentSave.user_id == viewer_id,
+                    ContentSave.target_type == "activity",
+                    ContentSave.target_id.in_(ids),
+                )
+                .all()
+            }
+        except Exception:
+            saved = set()
     rank = func.row_number().over(partition_by=ActivityComment.activity_id,
                                   order_by=(ActivityComment.created_at.desc(), ActivityComment.id.desc())).label("rank")
     latest = db.query(ActivityComment.id, rank).filter(ActivityComment.activity_id.in_(ids)).subquery()
@@ -130,7 +147,8 @@ def _format_many(db: Session, acts: List[NetworkActivity], viewer_id: Optional[U
         author_headline=a.user.profile.headline if a.user.profile else None,
         activity_type=a.activity_type, title=a.title, content=a.content, media_url=a.media_url, is_demo=a.is_demo,
         created_at=a.created_at, project=_preview(a.project, stats, viewer_id) if a.project else None,
-        likes_count=likes.get(a.id, 0), is_liked=a.id in liked, comments_count=comments.get(a.id, 0),
+        likes_count=likes.get(a.id, 0), is_liked=a.id in liked, is_saved=a.id in saved,
+        comments_count=comments.get(a.id, 0),
         comments=[_comment_response(c, viewer_id, a.user_id) for c in previews[a.id]],
         can_edit=viewer_id == a.user_id and a.activity_type in USER_POST_TYPES,
     ) for a in acts]
@@ -147,7 +165,7 @@ def get_feed(
     current_user: Optional[User] = Depends(get_current_user_optional),
 ):
     viewer_id = current_user.id if current_user else None
-    query = db.query(NetworkActivity).options(*_EAGER).filter(_visible(viewer_id))
+    query = db.query(NetworkActivity).options(*_EAGER).filter(_visible(viewer_id), NetworkActivity.is_demo.is_(False))
     if filter in _FILTERS:
         query = query.filter(_FILTERS[filter]())
     elif filter == "following":
@@ -233,6 +251,46 @@ def share_activity(activity_id: UUID, db: Session = Depends(get_db), current_use
            f"{display_name(current_user)} shared your post.", once=True)
     db.commit()
     return {"shared": True}
+
+
+@router.post("/activities/{activity_id}/save", dependencies=[rate_limit("save", 60, 60)])
+def toggle_activity_save(activity_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from app.models.content_save import ContentSave
+
+    _activity(db, activity_id, current_user.id)
+    existing = (
+        db.query(ContentSave)
+        .filter(
+            ContentSave.user_id == current_user.id,
+            ContentSave.target_type == "activity",
+            ContentSave.target_id == activity_id,
+        )
+        .first()
+    )
+    if existing:
+        db.delete(existing)
+        db.commit()
+        return {"is_saved": False}
+    try:
+        db.add(ContentSave(user_id=current_user.id, target_type="activity", target_id=activity_id))
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+    return {"is_saved": True}
+
+
+@router.post("/link-preview", dependencies=[rate_limit("link_preview", 30, 60)])
+def link_preview(body: dict, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from app.services.link_preview import get_link_preview
+
+    url = str((body or {}).get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    try:
+        return get_link_preview(db, url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 
 @router.post("/activities/{activity_id}/like", response_model=ActivityLikeResponse, dependencies=[rate_limit("like", 60, 60)])

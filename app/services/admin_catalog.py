@@ -12,79 +12,178 @@ from sqlalchemy import Enum as SAEnum, String, Text, false, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import Table
 from sqlalchemy.sql import delete as sa_delete
+from sqlalchemy.sql import update as sa_update
 
 import app.db.base  # noqa: F401  registers every model on Base.metadata
 from app.db.session import Base
 
-# group id, label, one-line description
+# Optional per-table allow-lists. When a table is listed, only these columns may change.
+# Tables not listed are still editable via safe defaults (see editable_columns).
+RECORD_UPDATE: dict[str, frozenset[str]] = {
+    "profiles": frozenset({
+        "full_name", "headline", "bio", "location", "company", "role", "skills",
+        "github_url", "linkedin_url", "website_url", "open_to_work", "profile_visibility",
+        "message_policy", "discoverable", "allow_connection_requests",
+    }),
+    "network_clubs": frozenset({
+        "name", "tagline", "about", "category", "institution", "join_policy", "policies",
+        "purpose", "funds_visibility", "verification_status", "verification_note", "slug",
+    }),
+    "club_members": frozenset({"role", "custom_title", "hide_on_profile", "email_broadcast_opt_in"}),
+    "club_announcements": frozenset({"title", "body", "pinned", "status", "audience", "badge"}),
+    "club_events": frozenset({"title", "description", "location", "status", "modality", "meeting_url"}),
+    "club_polls": frozenset({"question", "status", "allow_vote_change"}),
+    "club_showcases": frozenset({"title", "tagline", "description", "kind", "sub_category", "github_url", "live_url"}),
+    "projects": frozenset({"title", "short_description", "comments_enabled", "likes_hidden"}),
+    "technical_challenges": frozenset({"title", "status"}),
+    "notifications": frozenset({"message", "read"}),
+    "platform_settings": frozenset({"value"}),
+    "badge_definitions": frozenset({"name", "description", "status", "icon_key"}),
+    "entitlements": frozenset({"expires_at", "source"}),
+}
+
+# Rows here cannot be edited or deleted through the generic record.* actions.
+IMMUTABLE_TABLES = frozenset({
+    "users",
+    "platform_admins",
+    "platform_admin_invites",
+    "admin_proposals",
+    "admin_proposal_votes",
+    "admin_audit_events",
+})
+
+_LOCKED_COLUMN_NAMES = frozenset({
+    "created_at", "updated_at", "joined_at", "password_hash", "token_version",
+})
+
+# group id, label, short blurb
 GROUPS: list[tuple[str, str, str]] = [
-    ("accounts", "Account records", "Sign-in accounts and the profile fields behind them"),
-    ("projects", "Projects", "Projects, files, technologies, members, likes and comments"),
-    ("network", "Network", "Posts, likes and comments on the network"),
-    ("messages", "Messages", "Direct messages, group chats and reactions"),
-    ("connections", "Connections", "Connection requests and accepted pairs"),
-    ("collaboration", "Collaboration", "Requests to join someone else's project"),
-    ("recruiting", "Recruiting", "Shortlists and messages from recruiters"),
-    ("challenges", "Challenges", "Technical challenges, invitations, submissions and reviews"),
-    ("wraps", "Wraps", "Stored monthly wraps"),
-    ("safety", "Safety", "Blocks, restricts and mutes"),
-    ("workspace", "Workspace and GitHub", "GitHub links, drafts, sync jobs and commit history"),
-    ("notifications", "Notifications", "In-app notifications"),
-    ("usage", "Usage", "Which pages were opened, and which gallery direction was on screen"),
-    ("security", "Security records", "Password resets, admins, approvals and the audit log"),
+    ("accounts", "Accounts", "Sign-in and profiles"),
+    ("projects", "Projects", "Projects, files, likes, comments"),
+    ("network", "Network", "Posts and reactions"),
+    ("clubs", "Clubs", "Clubs, members, events, polls"),
+    ("messages", "Messages", "DMs and group chats"),
+    ("connections", "Connections", "Connection pairs"),
+    ("collaboration", "Collaboration", "Join requests"),
+    ("recruiting", "Recruiting", "Shortlists and outreach"),
+    ("challenges", "Challenges", "Assessments and reviews"),
+    ("career", "Career", "Experience, education, resumes"),
+    ("talent", "Talent", "Badges, entitlements, evaluations"),
+    ("intelligence", "Intelligence", "Project AI and settings"),
+    ("email", "Email", "Outbox and verification"),
+    ("engagement", "Engagement", "Saves and link previews"),
+    ("wraps", "Wraps", "Monthly wraps"),
+    ("safety", "Safety", "Blocks and mutes"),
+    ("workspace", "Workspace", "GitHub and drafts"),
+    ("notifications", "Notifications", "In-app notices"),
+    ("usage", "Usage", "Page visits"),
+    ("security", "Security", "Admins and audit"),
 ]
 
-# table name, label, group id, what an admin is looking at
+# table name, label, group id, short blurb
 TABLES: list[tuple[str, str, str, str]] = [
-    ("users", "Accounts", "accounts", "Sign-in accounts. Password hashes are hidden."),
-    ("profiles", "Profiles", "accounts", "Names, bios, privacy and notification settings."),
-    ("projects", "Projects", "projects", "Every project, public and private."),
-    ("files", "Project files", "projects", "File names stored on a project. File bytes are not shown here."),
-    ("project_tech", "Project technologies", "projects", "Which technologies are attached to which project."),
-    ("techstacks", "Technologies", "projects", "The technology list projects can use."),
-    ("project_collaborators", "Project members", "projects", "People on a project and the access they have."),
-    ("project_invitations", "Project invitations", "projects", "Invitations that are still open or already answered."),
-    ("project_likes", "Project likes", "projects", "Likes on projects."),
-    ("project_comments", "Project comments", "projects", "Comments written on projects."),
-    ("network_activities", "Posts", "network", "Network posts and the automatic activity items."),
-    ("activity_likes", "Post likes", "network", "Likes on network posts."),
-    ("activity_comments", "Post comments", "network", "Comments on network posts."),
-    ("messages", "Direct messages", "messages", "One-to-one messages, including ones a person unsent."),
-    ("message_reactions", "Message reactions", "messages", "Emoji reactions on direct messages."),
-    ("message_hides", "Hidden messages", "messages", "Messages hidden for one person."),
-    ("chat_rooms", "Group chats", "messages", "Group chats, including project chats."),
-    ("chat_members", "Group members", "messages", "Who is in each group and who was made a group admin."),
-    ("room_messages", "Group messages", "messages", "Messages sent inside group chats."),
-    ("room_message_reactions", "Group reactions", "messages", "Emoji reactions on group messages."),
-    ("room_message_hides", "Hidden group messages", "messages", "Group messages hidden for one person."),
-    ("room_message_opens", "View-once opens", "messages", "Who opened a view-once group message."),
-    ("connections", "Connections", "connections", "Pending, accepted and declined connections."),
-    ("collaboration_requests", "Collaboration requests", "collaboration", "Requests to collaborate on a project."),
-    ("shortlists", "Shortlists", "recruiting", "Private recruiter shortlists."),
-    ("shortlist_entries", "Shortlist entries", "recruiting", "Candidates saved on a shortlist, including private notes."),
-    ("recruitment_requests", "Recruitment requests", "recruiting", "Requests a recruiter sent to a developer."),
-    ("technical_challenges", "Challenges", "challenges", "Challenges recruiters wrote."),
-    ("challenge_invitations", "Challenge invitations", "challenges", "Who was invited to a challenge."),
-    ("challenge_submissions", "Submissions", "challenges", "Work developers submitted."),
-    ("challenge_reviews", "Reviews", "challenges", "Reviews recruiters wrote."),
-    ("monthly_wraps", "Monthly wraps", "wraps", "A finished month, stored once."),
-    ("user_blocks", "Blocks", "safety", "Blocks and restricts between two people."),
-    ("chat_mutes", "Mutes", "safety", "Muted direct chats and muted groups."),
-    ("github_connections", "GitHub connections", "workspace", "Which GitHub account is linked. Tokens are hidden."),
-    ("workspace_drafts", "Editor drafts", "workspace", "Unsaved editor work. The draft text is hidden."),
-    ("workspace_audit_events", "Workspace history", "workspace", "Push and sync attempts. File contents are not stored here."),
-    ("workspace_sync_jobs", "Sync jobs", "workspace", "Work that copied a GitHub change into a project."),
-    ("project_contributors", "Contributors", "workspace", "GitHub contributors captured for a project."),
-    ("project_commits", "Commits", "workspace", "Commits captured for a project."),
-    ("project_pushes", "Pushes", "workspace", "Push events captured for a project."),
-    ("notifications", "Notifications", "notifications", "Notifications already sent inside DevZ-Go."),
-    ("usage_events", "Visits", "usage", "Each time a signed-in person opened a page or switched the gallery direction. What they typed is not stored."),
-    ("password_reset_tokens", "Password resets", "security", "Whether a reset link exists. The link itself is hidden."),
-    ("platform_admins", "Admins", "security", "Accounts that can open this admin area."),
-    ("platform_admin_invites", "Admin invites", "security", "Emails that receive admin access when they sign up."),
-    ("admin_proposals", "Approval requests", "security", "Dangerous changes waiting on other admins."),
-    ("admin_proposal_votes", "Approval votes", "security", "Who approved or stopped a request."),
-    ("admin_audit_events", "Audit log", "security", "Changes made from the admin area."),
+    ("users", "Accounts", "accounts", "Sign-in accounts"),
+    ("profiles", "Profiles", "accounts", "Profile fields"),
+    ("projects", "Projects", "projects", "All projects"),
+    ("files", "Project files", "projects", "File names"),
+    ("project_tech", "Project technologies", "projects", "Tech on projects"),
+    ("techstacks", "Technologies", "projects", "Tech catalog"),
+    ("project_collaborators", "Project members", "projects", "Project access"),
+    ("project_invitations", "Project invitations", "projects", "Open invites"),
+    ("project_likes", "Project likes", "projects", "Likes"),
+    ("project_comments", "Project comments", "projects", "Comments"),
+    ("project_comment_likes", "Comment likes", "projects", "Likes on comments"),
+    ("network_activities", "Posts", "network", "Network posts"),
+    ("activity_likes", "Post likes", "network", "Likes on posts"),
+    ("activity_comments", "Post comments", "network", "Comments on posts"),
+    ("network_clubs", "Clubs", "clubs", "Student clubs"),
+    ("club_members", "Club members", "clubs", "Membership and roles"),
+    ("club_custom_roles", "Custom titles", "clubs", "Club-defined titles"),
+    ("club_role_permissions", "Role permissions", "clubs", "Permission matrix"),
+    ("club_events", "Club events", "clubs", "Events"),
+    ("club_announcements", "Announcements", "clubs", "Club posts"),
+    ("club_polls", "Polls", "clubs", "Polls"),
+    ("club_poll_options", "Poll options", "clubs", "Choices"),
+    ("club_poll_votes", "Poll votes", "clubs", "Votes"),
+    ("club_fund_entries", "Funds", "clubs", "Ledger rows"),
+    ("club_event_media", "Event media", "clubs", "Event files"),
+    ("club_showcases", "Showcases", "clubs", "Club project showcases"),
+    ("messages", "Direct messages", "messages", "One-to-one chat"),
+    ("message_reactions", "Message reactions", "messages", "DM reactions"),
+    ("message_hides", "Hidden messages", "messages", "Hidden DMs"),
+    ("chat_rooms", "Group chats", "messages", "Rooms"),
+    ("chat_members", "Group members", "messages", "Room members"),
+    ("room_messages", "Group messages", "messages", "Room messages"),
+    ("room_message_reactions", "Group reactions", "messages", "Room reactions"),
+    ("room_message_hides", "Hidden group messages", "messages", "Hidden room messages"),
+    ("room_message_opens", "View-once opens", "messages", "Opened view-once"),
+    ("connections", "Connections", "connections", "Connection pairs"),
+    ("collaboration_requests", "Collaboration requests", "collaboration", "Join requests"),
+    ("shortlists", "Shortlists", "recruiting", "Recruiter lists"),
+    ("shortlist_entries", "Shortlist entries", "recruiting", "Saved candidates"),
+    ("recruitment_requests", "Recruitment requests", "recruiting", "Outreach"),
+    ("technical_challenges", "Challenges", "challenges", "Assessments"),
+    ("challenge_invitations", "Challenge invitations", "challenges", "Invites"),
+    ("challenge_submissions", "Submissions", "challenges", "Work submitted"),
+    ("challenge_reviews", "Reviews", "challenges", "Reviews"),
+    ("career_experiences", "Experience", "career", "Work history"),
+    ("career_skill_intervals", "Skill intervals", "career", "Skill timeline"),
+    ("career_experience_projects", "Experience projects", "career", "Linked projects"),
+    ("career_education", "Education", "career", "Schools"),
+    ("career_certifications", "Certifications", "career", "Certs"),
+    ("career_field_visibility", "Field visibility", "career", "What recruiters see"),
+    ("resume_import_jobs", "Resume imports", "career", "Import jobs"),
+    ("resume_extracted_items", "Extracted items", "career", "Parsed resume rows"),
+    ("badge_definitions", "Badge definitions", "talent", "Badge catalog"),
+    ("badge_criteria_versions", "Badge criteria", "talent", "Criteria versions"),
+    ("earned_badges", "Earned badges", "talent", "Awards"),
+    ("skill_evidence_records", "Skill evidence", "talent", "Evidence"),
+    ("assessment_achievement_records", "Assessment achievements", "talent", "Assessment awards"),
+    ("entitlements", "Entitlements", "talent", "Premium access"),
+    ("generated_resumes", "Generated resumes", "talent", "Resume Studio"),
+    ("generated_resume_versions", "Resume versions", "talent", "Version history"),
+    ("resume_exports", "Resume exports", "talent", "Exports"),
+    ("consents", "Consents", "talent", "Consent records"),
+    ("candidate_evaluations", "Evaluations", "talent", "Recruiter notes"),
+    ("career_audit_logs", "Career audit", "talent", "Career changes"),
+    ("platform_settings", "Platform settings", "intelligence", "Global knobs"),
+    ("project_analysis_preferences", "Analysis preferences", "intelligence", "Per-project prefs"),
+    ("project_intelligence_settings", "PI settings", "intelligence", "Intelligence settings"),
+    ("project_source_snapshots", "Source snapshots", "intelligence", "Snapshots"),
+    ("project_analysis_jobs", "Analysis jobs", "intelligence", "Jobs"),
+    ("project_evidence_claims", "Evidence claims", "intelligence", "Claims"),
+    ("project_evidence_refs", "Evidence refs", "intelligence", "References"),
+    ("project_plain_insights", "Plain insights", "intelligence", "Summaries"),
+    ("project_ai_description_drafts", "AI drafts", "intelligence", "Draft descriptions"),
+    ("project_ai_usage_ledger", "AI usage", "intelligence", "Usage ledger"),
+    ("project_ai_publications", "AI publications", "intelligence", "Published AI text"),
+    ("pi_visitor_ai_requests", "Visitor AI requests", "intelligence", "Visitor quota"),
+    ("pi_monthly_usage", "Monthly PI usage", "intelligence", "Monthly counters"),
+    ("pi_generation_records", "Generation records", "intelligence", "Generation log"),
+    ("pending_registrations", "Pending signups", "email", "OTP signups"),
+    ("email_outbox", "Email outbox", "email", "Queued mail"),
+    ("email_delivery_events", "Delivery events", "email", "Delivery log"),
+    ("email_change_requests", "Email changes", "email", "Change requests"),
+    ("content_saves", "Saves", "engagement", "Saved content"),
+    ("link_previews", "Link previews", "engagement", "Preview cache"),
+    ("monthly_wraps", "Monthly wraps", "wraps", "Stored wraps"),
+    ("user_blocks", "Blocks", "safety", "Blocks"),
+    ("chat_mutes", "Mutes", "safety", "Mutes"),
+    ("github_connections", "GitHub connections", "workspace", "Linked GitHub"),
+    ("workspace_drafts", "Editor drafts", "workspace", "Drafts"),
+    ("workspace_audit_events", "Workspace history", "workspace", "Sync history"),
+    ("workspace_sync_jobs", "Sync jobs", "workspace", "Sync jobs"),
+    ("project_contributors", "Contributors", "workspace", "GitHub contributors"),
+    ("project_commits", "Commits", "workspace", "Commits"),
+    ("project_pushes", "Pushes", "workspace", "Pushes"),
+    ("notifications", "Notifications", "notifications", "In-app notices"),
+    ("usage_events", "Visits", "usage", "Page visits"),
+    ("password_reset_tokens", "Password resets", "security", "Reset links"),
+    ("platform_admins", "Admins", "security", "Admin access"),
+    ("platform_admin_invites", "Admin invites", "security", "Pending admin invites"),
+    ("admin_proposals", "Approval requests", "security", "Pending votes"),
+    ("admin_proposal_votes", "Approval votes", "security", "Votes"),
+    ("admin_audit_events", "Audit log", "security", "Admin changes"),
 ]
 
 _BY_NAME = {item[0]: item for item in TABLES}
@@ -117,10 +216,28 @@ def sql_table(name: str) -> Table:
     return Base.metadata.tables[name]
 
 
+def _present_table_names(db) -> set[str]:
+    """Tables that actually exist in the connected database (migrations may lag models)."""
+    from sqlalchemy import inspect as sa_inspect
+
+    bind = db.get_bind()
+    try:
+        return set(sa_inspect(bind).get_table_names())
+    except Exception:
+        return set(Base.metadata.tables)
+
+
 def groups_payload(db) -> list[dict]:
+    present = _present_table_names(db)
     counts = {}
     for name, table in ((item[0], Base.metadata.tables[item[0]]) for item in TABLES if item[0] in Base.metadata.tables):
-        counts[name] = int(db.execute(select(func.count()).select_from(table)).scalar_one())
+        if name not in present:
+            continue
+        try:
+            counts[name] = int(db.execute(select(func.count()).select_from(table)).scalar_one())
+        except Exception:
+            db.rollback()
+            continue
     grouped: dict[str, list[dict]] = {group[0]: [] for group in GROUPS}
     for name, label, group, blurb in TABLES:
         if name not in counts:
@@ -248,6 +365,8 @@ def list_rows(db, name: str, *, q: str = "", eqs: list[str] | None = None, offse
         "blurb": spec[3],
         "primary_key": _pk_names(table),
         "columns": [{"name": column.name, "secret": _is_secret(column.name)} for column in table.c],
+        "editable": editable_columns(name),
+        "removable": can_delete_table(name),
         "rows": [_row_dict(table, mapping, detail=False) for mapping in result.mappings()],
         "total": total,
         "offset": offset,
@@ -284,6 +403,8 @@ def get_row(db, name: str, pk_items: list[str]) -> dict:
         "blurb": spec[3],
         "primary_key": _pk_names(table),
         "columns": [{"name": column.name, "secret": _is_secret(column.name)} for column in table.c],
+        "editable": editable_columns(name),
+        "removable": can_delete_table(name),
         "row": _row_dict(table, mapping, detail=True),
     }
 
@@ -315,3 +436,56 @@ def delete_row(db, name: str, pk: dict[str, Any]) -> None:
         raise HTTPException(status_code=409, detail="Other records still depend on this one, so it was left in place.")
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="That record is already gone")
+
+
+def editable_columns(name: str) -> list[str]:
+    if name in IMMUTABLE_TABLES:
+        return []
+    table = sql_table(name)
+    pk = set(_pk_names(table))
+    allowed = RECORD_UPDATE.get(name)
+    out = []
+    for column in table.c:
+        if column.name in pk or column.name in _LOCKED_COLUMN_NAMES or _is_secret(column.name):
+            continue
+        if allowed is not None and column.name not in allowed:
+            continue
+        out.append(column.name)
+    return out
+
+
+def update_row(db, name: str, pk: dict[str, Any], fields: dict[str, Any]) -> None:
+    allowed = set(editable_columns(name))
+    if not allowed:
+        raise HTTPException(status_code=400, detail="That record cannot be edited from the admin area")
+    table = sql_table(name)
+    if set(pk) != set(_pk_names(table)):
+        raise HTTPException(status_code=400, detail="The record id is incomplete")
+    if not isinstance(fields, dict) or not fields:
+        raise HTTPException(status_code=400, detail="Choose at least one field to change")
+    values = {}
+    for key, value in fields.items():
+        key = str(key)
+        if key not in allowed or key not in table.c:
+            raise HTTPException(status_code=400, detail=f"{key} cannot be edited here")
+        if value is None or value == "":
+            values[key] = None
+        elif isinstance(value, (dict, list)):
+            values[key] = value
+        else:
+            values[key] = _coerce(table.c[key], str(value))
+    stmt = sa_update(table).values(**values)
+    for key, raw in pk.items():
+        stmt = stmt.where(table.c[key] == _coerce(table.c[key], str(raw)))
+    try:
+        result = db.execute(stmt)
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That change conflicts with something already stored.")
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="That record is already gone")
+
+
+def can_delete_table(name: str) -> bool:
+    return name not in IMMUTABLE_TABLES and name in _BY_NAME and name in Base.metadata.tables

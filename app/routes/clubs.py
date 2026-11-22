@@ -7,15 +7,17 @@ import uuid
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile  # Query used by list_groups
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from datetime import datetime, timezone
 
 from app.core.dependencies import get_current_user, get_current_user_optional, require_developer
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
+from app.models.club_features import ClubAnnouncement, ClubEvent
 from app.models.clubs import EXEC_ROLES, ClubCustomRole, ClubMember, NetworkClub
 from app.models.message import Message
 from app.models.user import User
@@ -25,6 +27,15 @@ from app.services.social import display_name, notify
 
 BANNER_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
 PRIVATE_TAG_MARKER = "__private__"
+
+
+def _is_image_upload(file: UploadFile, ext: str) -> bool:
+    """Accept image/* or empty content-type when the extension is a known image (croppers often omit MIME)."""
+    if ext not in BANNER_EXTS:
+        return False
+    content = (file.content_type or "").strip().lower()
+    return (not content) or content.startswith("image/")
+
 
 router = APIRouter(prefix="/groups", tags=["Network clubs"])
 
@@ -62,10 +73,10 @@ def _unique_slug(db: Session, name: str) -> str:
     return slug
 
 
-def _member_out(m: ClubMember) -> dict:
+def _member_out(m: ClubMember, *, include_email: bool = False) -> dict:
     u = m.user
     profile = getattr(u, "profile", None) if u else None
-    return {
+    out = {
         "userId": str(m.user_id),
         "name": display_name(u) if u else "Member",
         "username": u.username if u else "unknown",
@@ -74,7 +85,11 @@ def _member_out(m: ClubMember) -> dict:
         "role": FRONT_ROLE.get(m.role, m.role),
         "customTitle": m.custom_title,
         "joinedAt": m.joined_at.isoformat() if m.joined_at else None,
+        "emailBroadcastOptIn": bool(getattr(m, "email_broadcast_opt_in", True)),
     }
+    if include_email and u and getattr(u, "email", None):
+        out["email"] = u.email
+    return out
 
 
 def _is_private(club: NetworkClub) -> bool:
@@ -88,7 +103,7 @@ def _clean_tags(tags: list[str] | None, *, private: bool = False) -> list[str]:
     return cleaned
 
 
-def _club_out(club: NetworkClub, viewer_id: Optional[UUID] = None) -> dict:
+def _club_out(club: NetworkClub, viewer_id: Optional[UUID] = None, *, db: Optional[Session] = None) -> dict:
     all_rows = list(club.members or [])
     active_members = sorted(
         [m for m in all_rows if m.role != "pending"],
@@ -104,6 +119,25 @@ def _club_out(club: NetworkClub, viewer_id: Optional[UUID] = None) -> dict:
     viewer_is_exec = bool(viewer_member and viewer_member.role in EXEC_ROLES)
     private = _is_private(club)
     visible_tags = [t for t in (club.tags or []) if t != PRIVATE_TAG_MARKER]
+    announcement_count = 0
+    event_count = 0
+    if db is not None:
+        try:
+            announcement_count = (
+                db.query(ClubAnnouncement)
+                .filter(ClubAnnouncement.club_id == club.id, ClubAnnouncement.status == "published")
+                .count()
+            )
+            event_count = (
+                db.query(ClubEvent)
+                .filter(ClubEvent.club_id == club.id, ClubEvent.status == "published")
+                .count()
+            )
+        except Exception:
+            # Schema still migrating on a shared DB — don't take down the club list.
+            db.rollback()
+            announcement_count = 0
+            event_count = 0
     return {
         "id": str(club.id),
         "slug": club.slug,
@@ -114,24 +148,51 @@ def _club_out(club: NetworkClub, viewer_id: Optional[UUID] = None) -> dict:
         "visibility": "private" if private else "public",
         "bannerUrl": club.banner_url,
         "avatarUrl": club.avatar_url,
+        "pendingAvatarUrl": getattr(club, "pending_avatar_url", None) if viewer_is_exec else None,
+        "pendingAvatarApprovals": list(getattr(club, "pending_avatar_approvals", None) or [])
+        if viewer_is_exec
+        else [],
+        "pendingAvatarNeeded": _logo_approvals_needed(club) if viewer_is_exec else 0,
         "hostId": str(president.user_id) if president else (str(club.created_by) if club.created_by else ""),
         "hostName": display_name(president.user) if president and president.user else "",
         "hostUsername": president.user.username if president and president.user else "",
         "hostTitle": (president.custom_title if president else None) or "President",
         "memberCount": len(active_members),
         "projectCount": 0,
-        "announcementCount": 0,
+        "announcementCount": announcement_count,
+        "eventCount": event_count,
+        "institution": getattr(club, "institution", None),
+        "joinPolicy": getattr(club, "join_policy", None) or "open",
+        "contactSocials": dict(getattr(club, "contact_socials", None) or {}),
+        "purpose": getattr(club, "purpose", None),
+        "fundsVisibility": getattr(club, "funds_visibility", None) or "members",
+        "verified": bool(getattr(club, "verified_at", None))
+        or (getattr(club, "verification_status", None) == "verified"),
+        "verifiedAt": club.verified_at.isoformat() if getattr(club, "verified_at", None) else None,
+        "verificationStatus": getattr(club, "verification_status", None) or (
+            "verified" if getattr(club, "verified_at", None) else "none"
+        ),
+        "verificationNote": getattr(club, "verification_note", None),
         "isMember": bool(viewer_member),
         "hasPendingRequest": bool(viewer_pending),
         "userRole": FRONT_ROLE.get(viewer_member.role, viewer_member.role) if viewer_member else None,
         "userCustomTitle": viewer_member.custom_title if viewer_member else None,
-        "members": [_member_out(m) for m in active_members],
-        "pendingRequests": [_member_out(m) for m in pending_rows] if viewer_is_exec else [],
+        "hideOnProfile": bool(getattr(viewer_member, "hide_on_profile", True)) if viewer_member else None,
+        "emailBroadcastOptIn": bool(getattr(viewer_member, "email_broadcast_opt_in", True))
+        if viewer_member
+        else None,
+        "members": [_member_out(m, include_email=viewer_is_exec) for m in active_members],
+        "pendingRequests": [_member_out(m, include_email=viewer_is_exec) for m in pending_rows] if viewer_is_exec else [],
         "tags": visible_tags,
         "policies": club.policies or "",
         "customRoles": [{"id": str(r.id), "title": r.title} for r in (club.custom_roles or [])],
         "createdAt": club.created_at.isoformat() if club.created_at else None,
     }
+
+
+def _logo_approvals_needed(club: NetworkClub) -> int:
+    exec_count = sum(1 for m in (club.members or []) if m.role in EXEC_ROLES)
+    return min(3, max(exec_count, 1))
 
 
 def _load_club(db: Session, club_id_or_slug: str) -> NetworkClub:
@@ -189,6 +250,11 @@ class ClubCreateIn(BaseModel):
     avatarUrl: Optional[str] = None
     hostRole: Optional[str] = Field(default=None, max_length=40)
     hostTitle: Optional[str] = Field(default=None, max_length=120)
+    institution: Optional[str] = Field(default=None, max_length=200)
+    joinPolicy: str = Field(default="open", max_length=20)
+    contactSocials: dict = Field(default_factory=dict)
+    purpose: Optional[str] = Field(default=None, max_length=4000)
+    fundsVisibility: str = Field(default="members", max_length=20)
 
 
 class ClubPatchIn(BaseModel):
@@ -201,11 +267,17 @@ class ClubPatchIn(BaseModel):
     policies: Optional[str] = Field(default=None, max_length=12000)
     bannerUrl: Optional[str] = None
     avatarUrl: Optional[str] = None
+    institution: Optional[str] = Field(default=None, max_length=200)
+    joinPolicy: Optional[str] = Field(default=None, max_length=20)
+    contactSocials: Optional[dict] = None
+    purpose: Optional[str] = Field(default=None, max_length=4000)
+    fundsVisibility: Optional[str] = Field(default=None, max_length=20)
 
 
 class MemberRoleIn(BaseModel):
     role: str
     customTitle: Optional[str] = Field(default=None, max_length=120)
+    confirmation: Optional[str] = Field(default=None, max_length=200)
 
 
 class CustomRoleIn(BaseModel):
@@ -216,6 +288,13 @@ class CustomRoleIn(BaseModel):
 def list_groups(
     q: Optional[str] = None,
     category: Optional[str] = None,
+    institution: Optional[str] = None,
+    verified: Optional[bool] = None,
+    joined: Optional[bool] = None,
+    openToJoin: Optional[bool] = None,
+    upcomingEvents: Optional[bool] = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(24, ge=1, le=100),
     db: Session = Depends(get_db),
     viewer: Optional[User] = Depends(get_current_user_optional),
 ):
@@ -225,13 +304,58 @@ def list_groups(
     )
     if category and category != "all":
         query = query.filter(NetworkClub.category == category)
+    if institution and institution.strip():
+        query = query.filter(NetworkClub.institution.ilike(f"%{institution.strip()}%"))
+    if verified is True:
+        query = query.filter(NetworkClub.verified_at.isnot(None))
+    elif verified is False:
+        query = query.filter(NetworkClub.verified_at.is_(None))
+    if openToJoin is True:
+        query = query.filter(NetworkClub.join_policy == "open")
     if q and q.strip():
         term = f"%{q.strip()}%"
         query = query.filter(
             or_(NetworkClub.name.ilike(term), NetworkClub.tagline.ilike(term), NetworkClub.about.ilike(term))
         )
-    clubs = query.order_by(NetworkClub.created_at.desc()).limit(100).all()
-    return [_club_out(c, viewer.id if viewer else None) for c in clubs]
+    if upcomingEvents is True:
+        now = datetime.now(timezone.utc)
+        query = query.filter(
+            NetworkClub.id.in_(
+                db.query(ClubEvent.club_id).filter(
+                    ClubEvent.status == "published",
+                    ClubEvent.starts_at >= now,
+                )
+            )
+        )
+    if joined is True and viewer:
+        query = query.filter(
+            NetworkClub.id.in_(db.query(ClubMember.club_id).filter(ClubMember.user_id == viewer.id))
+        )
+    elif joined is False and viewer:
+        query = query.filter(
+            ~NetworkClub.id.in_(db.query(ClubMember.club_id).filter(ClubMember.user_id == viewer.id))
+        )
+    try:
+        total = query.count()
+        clubs = (
+            query.order_by(NetworkClub.created_at.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
+        items = [_club_out(c, viewer.id if viewer else None, db=db) for c in clubs]
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Club directory is temporarily unavailable (schema update pending). Retry shortly.",
+        ) from exc
+    return {
+        "items": items,
+        "page": page,
+        "limit": limit,
+        "total": total,
+    }
 
 
 @router.get("/mine")
@@ -253,7 +377,7 @@ def my_groups(db: Session = Depends(get_db), me: User = Depends(require_develope
     for m in memberships:
         if not m.club:
             continue
-        row = _club_out(m.club, me.id)
+        row = _club_out(m.club, me.id, db=db)
         row["membershipRole"] = FRONT_ROLE.get(m.role, m.role)
         row["membershipTitle"] = m.custom_title
         row["membershipJoinedAt"] = m.joined_at.isoformat() if m.joined_at else None
@@ -280,11 +404,14 @@ def clubs_for_user(
         .order_by(ClubMember.joined_at.desc())
         .all()
     )
+    is_self = bool(viewer and viewer.id == user_id)
     out = []
     for m in memberships:
         if not m.club:
             continue
-        row = _club_out(m.club, viewer.id if viewer else None)
+        if not is_self and getattr(m, "hide_on_profile", True):
+            continue
+        row = _club_out(m.club, viewer.id if viewer else None, db=db)
         row["membershipRole"] = FRONT_ROLE.get(m.role, m.role)
         row["membershipTitle"] = m.custom_title
         row["membershipJoinedAt"] = m.joined_at.isoformat() if m.joined_at else None
@@ -299,7 +426,7 @@ def get_group(
     viewer: Optional[User] = Depends(get_current_user_optional),
 ):
     club = _load_club(db, club_id)
-    return _club_out(club, viewer.id if viewer else None)
+    return _club_out(club, viewer.id if viewer else None, db=db)
 
 
 @router.post("", dependencies=[rate_limit("club-create", 6, 600)])
@@ -325,6 +452,9 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
     }.get(role, "Founder")
     title = (data.hostTitle or "").strip() or default_title
 
+    join_policy = (data.joinPolicy or "open").strip().lower()
+    if join_policy not in ("open", "request", "invite"):
+        join_policy = "open"
     club = NetworkClub(
         id=uuid.uuid4(),
         slug=_unique_slug(db, data.name),
@@ -336,7 +466,17 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
         policies=(data.policies or "").strip(),
         banner_url=(data.bannerUrl or None),
         avatar_url=(data.avatarUrl or None),
+        institution=(data.institution or None),
+        join_policy=join_policy,
+        contact_socials=dict(data.contactSocials or {}),
+        purpose=(data.purpose or None),
+        funds_visibility=(
+            data.fundsVisibility
+            if (data.fundsVisibility or "").strip().lower() in ("members", "executives")
+            else "members"
+        ),
         created_by=me.id,
+        verification_status="none",
     )
     db.add(club)
     db.flush()
@@ -346,8 +486,20 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
             user_id=me.id,
             role=role,
             custom_title=title,
+            email_broadcast_opt_in=True,
         )
     )
+    from app.models.club_features import DEFAULT_PERMS, ClubRolePermission
+
+    for r in ("vice_president", "treasurer", "executive", "member"):
+        db.add(
+            ClubRolePermission(
+                id=uuid.uuid4(),
+                club_id=club.id,
+                role=r,
+                permissions=dict(DEFAULT_PERMS),
+            )
+        )
     try:
         db.commit()
     except IntegrityError:
@@ -356,7 +508,7 @@ def create_group(data: ClubCreateIn, db: Session = Depends(get_db), me: User = D
             status_code=409,
             detail="Could not create this club (presidency conflict). Transfer an existing presidency or try again.",
         )
-    return _club_out(_load_club(db, str(club.id)), me.id)
+    return _club_out(_load_club(db, str(club.id)), me.id, db=db)
 
 
 @router.patch("/{club_id}")
@@ -390,8 +542,24 @@ def patch_group(
         club.banner_url = data.bannerUrl or None
     if data.avatarUrl is not None:
         club.avatar_url = data.avatarUrl or None
+    if data.institution is not None:
+        club.institution = data.institution.strip() or None
+    if data.joinPolicy is not None:
+        jp = data.joinPolicy.strip().lower()
+        if jp not in ("open", "request", "invite"):
+            raise HTTPException(status_code=400, detail="Invalid joinPolicy")
+        club.join_policy = jp
+    if data.contactSocials is not None:
+        club.contact_socials = dict(data.contactSocials)
+    if data.purpose is not None:
+        club.purpose = data.purpose.strip() or None
+    if data.fundsVisibility is not None:
+        fv = data.fundsVisibility.strip().lower()
+        if fv not in ("members", "executives"):
+            raise HTTPException(status_code=400, detail="fundsVisibility must be members or executives")
+        club.funds_visibility = fv
     db.commit()
-    return _club_out(_load_club(db, str(club.id)), me.id)
+    return _club_out(_load_club(db, str(club.id)), me.id, db=db)
 
 
 @router.post("/{club_id}/join", dependencies=[rate_limit("club-join", 20, 60)])
@@ -399,9 +567,13 @@ def join_group(club_id: str, db: Session = Depends(get_db), me: User = Depends(r
     club = _load_club(db, club_id)
     existing = next((m for m in club.members if m.user_id == me.id), None)
     if existing:
-        return _club_out(club, me.id)
+        return _club_out(club, me.id, db=db)
 
-    if _is_private(club):
+    policy = (getattr(club, "join_policy", None) or "open").lower()
+    if policy == "invite":
+        raise HTTPException(status_code=403, detail="This club is invite-only")
+
+    if _is_private(club) or policy == "request":
         db.add(ClubMember(club_id=club.id, user_id=me.id, role="pending", custom_title="Pending Request"))
         requester = display_name(me)
         exec_members = [m for m in club.members if m.role in EXEC_ROLES and m.user_id != me.id]
@@ -433,11 +605,19 @@ def join_group(club_id: str, db: Session = Depends(get_db), me: User = Depends(r
                 {"sender_id": str(me.id), "club_id": str(club.id), "preview": msg_text[:140]},
             )
         db.commit()
-        return _club_out(_load_club(db, str(club.id)), me.id)
+        return _club_out(_load_club(db, str(club.id)), me.id, db=db)
 
-    db.add(ClubMember(club_id=club.id, user_id=me.id, role="member", custom_title="Member"))
+    db.add(
+        ClubMember(
+            club_id=club.id,
+            user_id=me.id,
+            role="member",
+            custom_title="Member",
+            email_broadcast_opt_in=True,
+        )
+    )
     db.commit()
-    return _club_out(_load_club(db, str(club.id)), me.id)
+    return _club_out(_load_club(db, str(club.id)), me.id, db=db)
 
 
 @router.post("/{club_id}/requests/{target_user_id}/approve")
@@ -551,6 +731,12 @@ def update_member_role(
     }
 
     if role == "president":
+        confirmation = (getattr(data, "confirmation", None) or "").strip().lower()
+        if confirmation != (club.name or "").strip().lower():
+            raise HTTPException(
+                status_code=400,
+                detail="Type the exact club name to confirm presidency transfer",
+            )
         # Demote current president(s) in this club, then promote target.
         for m in club.members:
             if m.role == "president" and m.user_id != target.user_id:
@@ -619,10 +805,11 @@ def upload_club_banner(
     db: Session = Depends(get_db),
     me: User = Depends(require_developer),
 ):
+    """Cover banner updates immediately — no executive approval required."""
     club = _load_club(db, club_id)
     _require_exec(club, me.id)
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+    if not _is_image_upload(file, ext):
         raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
     file.file.seek(0, 2)
     too_big = file.file.tell() > 8 * 1024 * 1024
@@ -643,18 +830,71 @@ def upload_club_avatar(
     db: Session = Depends(get_db),
     me: User = Depends(require_developer),
 ):
+    """First logo publishes immediately; later logo changes need up to 3 executive approvals."""
     club = _load_club(db, club_id)
     _require_exec(club, me.id)
     ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in BANNER_EXTS or not (file.content_type or "").startswith("image/"):
+    if not _is_image_upload(file, ext):
         raise HTTPException(status_code=400, detail="Use a PNG, JPG, GIF, or WebP image")
     file.file.seek(0, 2)
     too_big = file.file.tell() > 5 * 1024 * 1024
     file.file.seek(0)
     if too_big:
-        raise HTTPException(status_code=413, detail="Photo is larger than 5 MB")
+        raise HTTPException(status_code=413, detail="Logo is larger than 5 MB")
     name = f"{club.id}_{uuid.uuid4().hex}.{ext}"
     storage.save(f"club-avatars/{name}", file.file)
-    club.avatar_url = f"/storage/club-avatars/{name}"
+    url = f"/storage/club-avatars/{name}"
+    # Initial logo (required for every club) goes live immediately
+    if not club.avatar_url:
+        club.avatar_url = url
+        club.pending_avatar_url = None
+        club.pending_avatar_approvals = []
+    else:
+        needed = _logo_approvals_needed(club)
+        club.pending_avatar_url = url
+        club.pending_avatar_approvals = [str(me.id)]
+        if len(club.pending_avatar_approvals) >= needed:
+            club.avatar_url = url
+            club.pending_avatar_url = None
+            club.pending_avatar_approvals = []
+    db.commit()
+    return _club_out(_load_club(db, str(club.id)), me.id)
+
+
+@router.post("/{club_id}/avatar/approve", dependencies=[rate_limit("club-avatar-approve", 30, 60)])
+def approve_club_avatar(
+    club_id: str,
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    club = _load_club(db, club_id)
+    _require_exec(club, me.id)
+    pending = getattr(club, "pending_avatar_url", None)
+    if not pending:
+        raise HTTPException(status_code=400, detail="No pending logo to approve")
+    approvals = list(getattr(club, "pending_avatar_approvals", None) or [])
+    uid = str(me.id)
+    if uid not in approvals:
+        approvals.append(uid)
+    club.pending_avatar_approvals = approvals
+    needed = _logo_approvals_needed(club)
+    if len(approvals) >= needed:
+        club.avatar_url = pending
+        club.pending_avatar_url = None
+        club.pending_avatar_approvals = []
+    db.commit()
+    return _club_out(_load_club(db, str(club.id)), me.id)
+
+
+@router.delete("/{club_id}/avatar/pending", dependencies=[rate_limit("club-avatar-cancel", 20, 60)])
+def cancel_pending_avatar(
+    club_id: str,
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    club = _load_club(db, club_id)
+    _require_president(club, me.id)
+    club.pending_avatar_url = None
+    club.pending_avatar_approvals = []
     db.commit()
     return _club_out(_load_club(db, str(club.id)), me.id)
