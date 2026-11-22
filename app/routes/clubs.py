@@ -91,16 +91,22 @@ def _club_out(club: NetworkClub, viewer_id: Optional[UUID] = None, *, db: Option
     announcement_count = 0
     event_count = 0
     if db is not None:
-        announcement_count = (
-            db.query(ClubAnnouncement)
-            .filter(ClubAnnouncement.club_id == club.id, ClubAnnouncement.status == "published")
-            .count()
-        )
-        event_count = (
-            db.query(ClubEvent)
-            .filter(ClubEvent.club_id == club.id, ClubEvent.status == "published")
-            .count()
-        )
+        try:
+            announcement_count = (
+                db.query(ClubAnnouncement)
+                .filter(ClubAnnouncement.club_id == club.id, ClubAnnouncement.status == "published")
+                .count()
+            )
+            event_count = (
+                db.query(ClubEvent)
+                .filter(ClubEvent.club_id == club.id, ClubEvent.status == "published")
+                .count()
+            )
+        except Exception:
+            # Schema still migrating on a shared DB — don't take down the club list.
+            db.rollback()
+            announcement_count = 0
+            event_count = 0
     return {
         "id": str(club.id),
         "slug": club.slug,
@@ -292,15 +298,23 @@ def list_groups(
         query = query.filter(
             ~NetworkClub.id.in_(db.query(ClubMember.club_id).filter(ClubMember.user_id == viewer.id))
         )
-    total = query.count()
-    clubs = (
-        query.order_by(NetworkClub.created_at.desc())
-        .offset((page - 1) * limit)
-        .limit(limit)
-        .all()
-    )
+    try:
+        total = query.count()
+        clubs = (
+            query.order_by(NetworkClub.created_at.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
+        items = [_club_out(c, viewer.id if viewer else None, db=db) for c in clubs]
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Club directory is temporarily unavailable (schema update pending). Retry shortly.",
+        ) from exc
     return {
-        "items": [_club_out(c, viewer.id if viewer else None, db=db) for c in clubs],
+        "items": items,
         "page": page,
         "limit": limit,
         "total": total,

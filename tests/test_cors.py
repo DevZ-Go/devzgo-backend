@@ -51,3 +51,22 @@ def test_apex_and_pages_preview_allowed():
         )
         assert res.status_code == 200, origin
         assert res.headers.get("access-control-allow-origin") == origin
+
+
+def test_unhandled_500_still_has_cors_headers(monkeypatch):
+    """Bare 500s used to omit ACAO and browsers reported a fake CORS error."""
+    from fastapi import APIRouter
+
+    boom = APIRouter()
+
+    @boom.get("/__cors_boom_test")
+    def _boom():
+        raise RuntimeError("forced failure for cors test")
+
+    app.include_router(boom)
+    client = TestClient(app, raise_server_exceptions=False)
+    res = client.get("/__cors_boom_test", headers={"Origin": "https://www.devzgo.com"})
+    assert res.status_code == 500
+    assert res.headers.get("access-control-allow-origin") == "https://www.devzgo.com"
+    assert res.headers.get("access-control-allow-credentials") == "true"
+

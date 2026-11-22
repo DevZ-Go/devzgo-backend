@@ -8,7 +8,9 @@ behind permissioned /projects/{id}/file routes.
 """
 
 import asyncio
+import logging
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -16,14 +18,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 # Importing CORSMiddleware to handle Cross-Origin Resource Sharing, allowing the frontend to communicate with the backend
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.errors import ApiError, api_error_handler
+
+log = logging.getLogger("devzgo.cors")
 from app.db import base as _models  # noqa: F401  registers every model before the routes use them
 from app.routes.auth import router as auth_router
 from app.routes.projects import router as projects_router
@@ -110,19 +114,61 @@ def _cors_origins() -> list[str]:
     return out
 
 
+_CORS_ORIGIN_REGEX = os.getenv(
+    "CORS_ORIGIN_REGEX",
+    # Local Vite, Cloudflare Pages previews, and production apex/www.
+    r"https?://(localhost|127\.0\.0\.1)(:\d+)?$|"
+    r"https://(.*\.)?pages\.dev$|"
+    r"https://(www\.)?devzgo\.com$",
+)
+_CORS_ORIGIN_RE = re.compile(_CORS_ORIGIN_REGEX)
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return False
+    if origin in _cors_origins():
+        return True
+    return bool(_CORS_ORIGIN_RE.match(origin))
+
+
+def _cors_headers_for(origin: str | None) -> dict[str, str]:
+    if not _origin_allowed(origin):
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin or "",
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
-    # Local Vite ports, plus *.pages.dev preview URLs when CORS_ORIGIN_REGEX is unset.
-    allow_origin_regex=os.getenv(
-        "CORS_ORIGIN_REGEX",
-        r"https?://(localhost|127\.0\.0\.1)(:\d+)?$|https://.*\.pages\.dev$",
-    ),
+    allow_origin_regex=_CORS_ORIGIN_REGEX,
     allow_credentials=True,
     # Explicit methods so DELETE is never omitted by proxies or middleware
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """
+    Unhandled errors are normally turned into plain-text 500s by Starlette's
+    ServerErrorMiddleware *outside* CORSMiddleware, so browsers report a false
+    CORS failure instead of the real 500. Return JSON inside the app stack and
+    attach ACAO ourselves so www.devzgo.com can always read the response.
+    """
+    log.exception("Unhandled error on %s %s", request.method, request.url.path)
+    origin = request.headers.get("origin")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=_cors_headers_for(origin),
+    )
 
 # Public media only: covers, videos, profile photos, club art. Do not expose storage/project_<uuid>/.
 _PUBLIC_MEDIA_KINDS = ("covers", "videos", "avatars", "resumes", "club-banners", "club-avatars", "club-galleries")
@@ -142,6 +188,7 @@ app.include_router(media_router)
 # The schema comes only from Alembic migrations (app/scripts/bootstrap_db.py runs them at container start).
 
 app.add_exception_handler(ApiError, api_error_handler)
+# Exception catch-all is registered above middleware-adjacent; keep ApiError first.
 app.include_router(auth_router)
 app.include_router(github_auth_router)
 app.include_router(github_import_router)

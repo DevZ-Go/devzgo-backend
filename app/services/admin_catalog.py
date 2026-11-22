@@ -216,10 +216,28 @@ def sql_table(name: str) -> Table:
     return Base.metadata.tables[name]
 
 
+def _present_table_names(db) -> set[str]:
+    """Tables that actually exist in the connected database (migrations may lag models)."""
+    from sqlalchemy import inspect as sa_inspect
+
+    bind = db.get_bind()
+    try:
+        return set(sa_inspect(bind).get_table_names())
+    except Exception:
+        return set(Base.metadata.tables)
+
+
 def groups_payload(db) -> list[dict]:
+    present = _present_table_names(db)
     counts = {}
     for name, table in ((item[0], Base.metadata.tables[item[0]]) for item in TABLES if item[0] in Base.metadata.tables):
-        counts[name] = int(db.execute(select(func.count()).select_from(table)).scalar_one())
+        if name not in present:
+            continue
+        try:
+            counts[name] = int(db.execute(select(func.count()).select_from(table)).scalar_one())
+        except Exception:
+            db.rollback()
+            continue
     grouped: dict[str, list[dict]] = {group[0]: [] for group in GROUPS}
     for name, label, group, blurb in TABLES:
         if name not in counts:
