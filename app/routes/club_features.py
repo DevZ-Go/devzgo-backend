@@ -687,6 +687,23 @@ def cancel_event(
     return _event_out(row)
 
 
+@router.delete("/{club_id}/events/{event_id}", status_code=204)
+def delete_event(
+    club_id: str,
+    event_id: UUID,
+    db: Session = Depends(get_db),
+    me: User = Depends(require_developer),
+):
+    club = _load_club(db, club_id)
+    _require_perm(db, club, me.id, "events")
+    row = db.query(ClubEvent).filter_by(id=event_id, club_id=club.id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Event not found")
+    db.delete(row)
+    db.commit()
+    return None
+
+
 # ── Polls ────────────────────────────────────────────────────────────────────
 
 class PollIn(BaseModel):
