@@ -26,6 +26,8 @@ Password = Annotated[str, AfterValidator(_password)]
 
 class UserCreate(BaseModel):
     username: Username
+    first_name: Optional[str] = Field(default=None, max_length=60)
+    last_name: Optional[str] = Field(default=None, max_length=60)
     email: EmailStr
     password: Password
     role: Optional[str] = Field(default=None, max_length=40)
@@ -100,6 +102,8 @@ class UserResponse(BaseModel):
     created_at: datetime
     has_password: bool = True
     username_needs_choice: bool = False
+    name_needs_choice: bool = False
+    full_name: Optional[str] = None
     account_type: str = "developer"
     email_verified: bool = True
     deactivated_at: Optional[datetime] = None

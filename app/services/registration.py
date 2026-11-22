@@ -48,6 +48,7 @@ def start_pending_registration(
     password: str | None,
     role: str | None,
     company: str | None,
+    full_name: str | None = None,
     request: Request | None = None,
     purpose: str = "register",
     github_id: str | None = None,
@@ -85,7 +86,7 @@ def start_pending_registration(
         company=company,
         purpose=purpose,
         github_id=github_id,
-        github_payload=github_payload,
+        github_payload={**(github_payload or {}), **({"full_name": full_name} if full_name else {})} or None,
         otp_hash=hash_otp(code, subject=email),
         otp_expires_at=otp_expiry(now),
         resend_available_at=resend_at(now),
@@ -199,7 +200,14 @@ def verify_pending_otp(db: Session, pending_id: UUID, code: str) -> dict:
             user.profile = profile
         profile.github_url = profile.github_url or gh.get("html_url")
         profile.avatar_url = profile.avatar_url or gh.get("avatar_url")
-        profile.full_name = profile.full_name or gh.get("name")
+        profile.full_name = profile.full_name or gh.get("name") or gh.get("full_name")
+        db.commit()
+    elif isinstance(pending.github_payload, dict) and pending.github_payload.get("full_name"):
+        profile = user.profile or UserProfile(user_id=user.id)
+        if user.profile is None:
+            db.add(profile)
+            user.profile = profile
+        profile.full_name = profile.full_name or pending.github_payload.get("full_name")
         db.commit()
     if pending.role or pending.company:
         profile = user.profile or UserProfile(user_id=user.id)
