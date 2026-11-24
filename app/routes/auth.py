@@ -79,6 +79,12 @@ def register(user_data: UserCreate, request: Request, db: Session = Depends(get_
     if user_data.role == "Recruiter" and len(" ".join((user_data.company or "").split())) < 2:
         raise HTTPException(status_code=400, detail="Add the company or agency you recruit for")
 
+    first = (user_data.first_name or "").strip()
+    last = (user_data.last_name or "").strip()
+    if not first or not last:
+        raise HTTPException(status_code=400, detail="Enter your first and last name")
+    full_name = f"{first} {last}"
+
     if require_email_verification():
         return registration_service.start_pending_registration(
             db,
@@ -87,6 +93,7 @@ def register(user_data: UserCreate, request: Request, db: Session = Depends(get_
             password=user_data.password,
             role=user_data.role,
             company=user_data.company,
+            full_name=full_name,
             request=request,
         )
 
@@ -99,15 +106,15 @@ def register(user_data: UserCreate, request: Request, db: Session = Depends(get_
         account_type=account_type_for(user_data.role),
         email_verified=True,
     ))
+    profile = UserProfile(user_id=user.id, full_name=full_name)
+    db.add(profile)
     if user_data.role or user_data.company:
-        profile = UserProfile(user_id=user.id)
-        db.add(profile)
         assign_identity(
             user, profile, user_data.role, user_data.company,
             company_sent=True, role_sent=user_data.role is not None,
         )
-        user.profile = profile
-        db.commit()
+    user.profile = profile
+    db.commit()
     if user.welcome_email_sent_at is None:
         row = email_service.enqueue(
             db,
@@ -326,10 +333,15 @@ def get_current_user_info(current_user: User = Depends(get_current_user), db: Se
     from app.services.platform_admin import claim_reserved_admin
     role = claim_reserved_admin(db, current_user)
     profile = current_user.profile
+    full_name = (profile.full_name or "").strip() if profile else ""
+    # Require first + last (at least two parts). Username-only or single-token names prompt completion.
+    name_parts = [p for p in full_name.split() if p]
     return UserResponse.model_validate(current_user).model_copy(
         update={
             "is_platform_admin": role is not None,
             "admin_role": role,
             "avatar_url": profile.avatar_url if profile else None,
+            "full_name": full_name or None,
+            "name_needs_choice": len(name_parts) < 2,
         }
     )

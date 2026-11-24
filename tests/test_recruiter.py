@@ -14,12 +14,12 @@ def _login(client, email):
 def test_recruiter_signup_asks_for_a_company_and_shows_it(client, make_user):
     stranger, _ = make_user()
     missing = client.post("/auth/register", json={
-        "username": "recruiterone", "email": "recruiterone@example.com", "password": "Password1!", "role": "Recruiter",
+        "username": "recruiterone", "email": "recruiterone@example.com", "password": "Password1!", "first_name": "Test", "last_name": "User", "role": "Recruiter",
     })
     assert missing.status_code == 400
 
     created = client.post("/auth/register", json={
-        "username": "recruiterone", "email": "recruiterone@example.com", "password": "Password1!",
+        "username": "recruiterone", "email": "recruiterone@example.com", "password": "Password1!", "first_name": "Test", "last_name": "User",
         "role": "Recruiter", "company": "North Agency",
     })
     assert created.status_code == 200

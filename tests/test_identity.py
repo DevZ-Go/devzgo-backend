@@ -19,14 +19,20 @@ def test_username_rules_and_availability(client, make_user):
     assert check("ab")["reason"] == check(".dot")["reason"] == check("bad name")["reason"] == "invalid"
     assert check("Admin")["reason"] == "reserved"
 
-    body = {"username": "Taken_Name", "email": "taken@example.com", "password": "Password1!"}
+    body = {
+        "username": "Taken_Name",
+        "email": "taken@example.com",
+        "password": "Password1!",
+        "first_name": "Test",
+        "last_name": "User",
+    }
     created = client.post("/auth/register", json=body)
     assert created.status_code == 200 and created.json()["username"] == "taken_name"
     assert check("TAKEN_name") == {"username": "taken_name", "available": False, "reason": "taken"}
     assert client.post("/auth/register", json={**body, "email": "t2@example.com", "username": "TAKEN_NAME"}).status_code == 409
     assert client.post("/auth/register", json={**body, "username": "admin", "email": "t3@example.com"}).status_code == 422
     assert client.post("/auth/register", json={**body, "username": "weakpw", "email": "t4@example.com",
-                                               "password": "password1"}).status_code == 422
+                                               "password": "password1", "first_name": "Test", "last_name": "User"}).status_code == 422
 
 
 def test_change_password_revokes_old_tokens(client, make_user):
@@ -61,7 +67,7 @@ def test_github_only_account_can_set_password(client):
 
 
 def test_login_accepts_email_or_username_in_any_case(client):
-    client.post("/auth/register", json={"username": "either_way", "email": "either@example.com", "password": "Password1!"})
+    client.post("/auth/register", json={"username": "either_way", "email": "either@example.com", "password": "Password1!", "first_name": "Test", "last_name": "User"})
     for login_id in ("either@example.com", "EITHER@example.com", "either_way", "Either_Way", "@either_way"):
         response = client.post("/auth/login", data={"username": login_id, "password": "Password1!"})
         assert response.status_code == 200, login_id

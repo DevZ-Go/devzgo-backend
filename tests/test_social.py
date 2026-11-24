@@ -76,7 +76,13 @@ def test_like_double_click_is_safe_and_notifies_once(client, make_user):
 
 
 def test_duplicate_username_and_case_insensitive_email(client, make_user):
-    payload = {"username": "dupname", "email": "Dup@Example.com", "password": "Password1!"}
+    payload = {
+        "username": "dupname",
+        "email": "Dup@Example.com",
+        "password": "Password1!",
+        "first_name": "Test",
+        "last_name": "User",
+    }
     assert client.post("/auth/register", json=payload).status_code == 200
     assert client.post("/auth/register", json={**payload, "email": "x@example.com"}).status_code == 409
     assert client.post("/auth/register", json={**payload, "username": "other1", "email": "dup@example.com"}).status_code == 409

@@ -4,7 +4,7 @@ import json
 
 
 def _register(client, username, email):
-    created = client.post("/auth/register", json={"username": username, "email": email, "password": "Password1!"})
+    created = client.post("/auth/register", json={"username": username, "email": email, "password": "Password1!", "first_name": "Test", "last_name": "User"})
     assert created.status_code == 200, created.text
     token = client.post("/auth/login", data={"username": email, "password": "Password1!"}).json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
